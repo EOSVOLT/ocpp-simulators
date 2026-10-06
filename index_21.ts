@@ -16,29 +16,33 @@ async function main(): Promise<VCP> {
     ocppVersion: OcppVersion.OCPP_2_1,
     basicAuthPassword: process.env.PASSWORD ?? undefined,
     adminPort: Number.parseInt(process.env.ADMIN_PORT ?? "9999"),
-  });
-  await vcp.connect();
-  vcp.send(
-    bootNotificationOcppOutgoing.request({
-      reason: "PowerUp",
-      chargingStation: {
-        model: "VirtualChargePoint",
-        vendorName: "Solidstudio",
-      },
-    }),
-  );
-  for (let evseId = 1; evseId <= evses; evseId++) {
-    for (let connectorId = 1; connectorId <= connectors; connectorId++) {
-      vcp.send(
-        statusNotificationOcppOutgoing.request({
-          evseId,
-          connectorId,
-          connectorStatus: "Available",
-          timestamp: new Date().toISOString(),
+    // Runs once the socket is open: on this connect and again after an admin
+    // /disconnect + /connect.
+    boot: (station) => {
+      station.send(
+        bootNotificationOcppOutgoing.request({
+          reason: "PowerUp",
+          chargingStation: {
+            model: "VirtualChargePoint",
+            vendorName: "Solidstudio",
+          },
         }),
       );
-    }
-  }
+      for (let evseId = 1; evseId <= evses; evseId++) {
+        for (let connectorId = 1; connectorId <= connectors; connectorId++) {
+          station.send(
+            statusNotificationOcppOutgoing.request({
+              evseId,
+              connectorId,
+              connectorStatus: "Available",
+              timestamp: new Date().toISOString(),
+            }),
+          );
+        }
+      }
+    },
+  });
+  await vcp.connect();
   return vcp;
 }
 

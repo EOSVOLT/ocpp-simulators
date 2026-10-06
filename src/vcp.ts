@@ -38,7 +38,15 @@ interface VCPOptions {
   chargePointId: string;
   basicAuthPassword?: string;
   adminPort?: number;
+  // What the station sends once its socket is open (BootNotification, the
+  // connector statuses). Runs on the first connect() and again on every admin
+  // /connect after a /disconnect, so the CSMS sees a fresh boot each time.
+  boot?: (vcp: VCP) => void;
 }
+
+// How long an admin /connect waits for the CSMS to accept the socket before
+// it gives up and leaves the station offline.
+const CONNECT_TIMEOUT_MS = 15_000;
 
 // Runtime fault injection for RemoteStartTransaction, used to exercise the
 // backend's authorization-recapture path. See remoteStartTransaction.ts.
@@ -125,6 +133,12 @@ export class VCP {
 
   private isFinishing = false;
 
+  // Set by the admin /disconnect: the socket is closed on purpose and must stay
+  // closed. While it is set neither _onClose nor the error handler hands the
+  // station to close() (the auto-restart loop), so nothing reconnects until
+  // /connect clears it or /restart replaces the process.
+  manuallyOffline = false;
+
   private postMessageActions: Record<string, () => void | Promise<void>> = {};
 
   // Waiters for /execute-sync: resolved with the CSMS's actual reply (keyed by
@@ -208,6 +222,7 @@ export class VCP {
       status: "OK",
       cpId: this.vcpOptions.chargePointId,
       connected: this.ws?.readyState === WebSocket.OPEN,
+      offline: this.manuallyOffline,
       delays: this.getDelayState(),
       meter: this.getMeterState(),
       transactions: this.transactionManager.transactions.size,
@@ -668,6 +683,25 @@ export class VCP {
           return c.json({ ...this.getWsUrlState(), restarting: true });
         },
       );
+      // Take the station offline and bring it back without touching the
+      // process: /disconnect closes the OCPP socket and holds the auto-restart
+      // off, /connect reopens it with the boot sequence. The admin server stays
+      // up throughout, so the panel keeps its handle on the station.
+      adminApi.post("/disconnect", (c) => {
+        this.disconnect();
+        return c.json({ ok: true, connected: false });
+      });
+      adminApi.post("/connect", async (c) => {
+        try {
+          await this.reconnect();
+        } catch (err) {
+          return c.json(
+            { ok: false, connected: false, error: String(err) },
+            502,
+          );
+        }
+        return c.json({ ok: true, connected: true });
+      });
       // Full process restart. Exits the process so the shell supervisor
       // (run_simulators.sh / run_one_sim.sh, both a `while true` loop) relaunches
       // it -- a fresh process that reloads .env (WS_URL etc.) and code. The HTTP
@@ -689,7 +723,7 @@ export class VCP {
   async connect(): Promise<void> {
     logger.info(`Connecting... | ${util.inspect(this.vcpOptions)}`);
     this.isFinishing = false;
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const websocketUrl = `${this.vcpOptions.endpoint}/${this.vcpOptions.chargePointId}`;
       const protocol = toProtocolVersion(this.vcpOptions.ocppVersion);
       this.ws = new WebSocket(websocketUrl, [protocol], {
@@ -704,7 +738,10 @@ export class VCP {
         },
       });
 
-      this.ws.on("open", () => resolve());
+      this.ws.on("open", () => {
+        resolve();
+        this.runBoot();
+      });
       this.ws.on("message", (message: string) => this._onMessage(message));
       this.ws.on("ping", () => {
         logger.info("Received PING");
@@ -718,9 +755,93 @@ export class VCP {
       this.ws.on("error", (error: Error) => {
         logger.error("Websocket error:");
         logger.error(error);
+        if (this.manuallyOffline) {
+          // A /connect the CSMS refused, or a socket the admin closed on
+          // purpose: the station stays offline, nothing is restarted. The
+          // reject only matters while the open is still pending.
+          reject(error);
+          return;
+        }
         close(this);
       });
     });
+  }
+
+  private runBoot(): void {
+    if (!this.vcpOptions.boot) {
+      return;
+    }
+    try {
+      this.vcpOptions.boot(this);
+    } catch (err) {
+      logger.error(`Boot sequence failed: ${String(err)}`);
+    }
+  }
+
+  // Admin /disconnect: close the OCPP socket only. The admin server stays up,
+  // the timers stop so nothing tries to send on a closed socket, and the open
+  // transactions stay in memory. Idempotent.
+  disconnect(): void {
+    this.manuallyOffline = true;
+    this.stopTimers();
+    if (!this.ws) {
+      return;
+    }
+    logger.info("Going offline on request: closing the OCPP socket");
+    this.isFinishing = true;
+    this.ws.close();
+    this.ws = undefined;
+  }
+
+  // Admin /connect: open the socket again on this same instance and run the
+  // boot sequence. The flag stays set while the attempt is pending so a
+  // refusal leaves the station offline instead of waking the auto-restart.
+  // Resolves once the socket is open; rejects with the CSMS's refusal or on
+  // CONNECT_TIMEOUT_MS.
+  async reconnect(): Promise<void> {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.manuallyOffline = false;
+      return;
+    }
+    this.manuallyOffline = true;
+    this.stopTimers();
+    if (this.ws) {
+      this.isFinishing = true;
+      this.ws.terminate();
+      this.ws = undefined;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `CSMS did not accept the socket within ${CONNECT_TIMEOUT_MS} ms`,
+            ),
+          ),
+        CONNECT_TIMEOUT_MS,
+      );
+    });
+    try {
+      await Promise.race([this.connect(), timedOut]);
+    } catch (err) {
+      this.isFinishing = true;
+      this.ws?.terminate();
+      this.ws = undefined;
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+    this.manuallyOffline = false;
+    this.transactionManager.resumeMeterTimers();
+  }
+
+  private stopTimers(): void {
+    if (this.heartbeatIntervalId) {
+      clearInterval(this.heartbeatIntervalId);
+      this.heartbeatIntervalId = undefined;
+    }
+    this.transactionManager.suspendMeterTimers();
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: ocpp types
@@ -1008,7 +1129,7 @@ export class VCP {
   }
 
   private _onClose(code: number, reason: string) {
-    if (this.isFinishing) {
+    if (this.isFinishing || this.manuallyOffline) {
       return;
     }
     logger.info(`Connection closed. code=${code}, reason=${reason}`);

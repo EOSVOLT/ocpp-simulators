@@ -23,25 +23,29 @@ async function main(): Promise<VCP> {
     ocppVersion: OcppVersion.OCPP_1_6,
     basicAuthPassword: process.env.PASSWORD ?? undefined,
     adminPort: Number.parseInt(process.env.ADMIN_PORT ?? "9999"),
+    // Runs once the socket is open: on this connect and again after an admin
+    // /disconnect + /connect, so Cosmos gets a fresh boot each time.
+    boot: (station) => {
+      station.send(
+        bootNotificationOcppMessage.request({
+          chargePointVendor: "Solidstudio",
+          chargePointModel: "VirtualChargePoint",
+          chargePointSerialNumber: "S001",
+          firmwareVersion: "1.0.0",
+        }),
+      );
+      for (let connectorId = 1; connectorId <= connectors; connectorId++) {
+        station.send(
+          statusNotificationOcppMessage.request({
+            connectorId,
+            errorCode: "NoError",
+            status: "Available",
+          }),
+        );
+      }
+    },
   });
   await vcp.connect();
-  vcp.send(
-    bootNotificationOcppMessage.request({
-      chargePointVendor: "Solidstudio",
-      chargePointModel: "VirtualChargePoint",
-      chargePointSerialNumber: "S001",
-      firmwareVersion: "1.0.0",
-    }),
-  );
-  for (let connectorId = 1; connectorId <= connectors; connectorId++) {
-    vcp.send(
-      statusNotificationOcppMessage.request({
-        connectorId,
-        errorCode: "NoError",
-        status: "Available",
-      }),
-    );
-  }
   return vcp;
 }
 

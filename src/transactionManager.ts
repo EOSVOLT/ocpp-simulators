@@ -89,6 +89,22 @@ export class TransactionManager {
     this.rearmMeterTimers();
   }
 
+  // Offline on purpose (admin /disconnect): clear every timer but keep the
+  // transactions, so nothing tries to send on a closed socket and the register
+  // still climbs. resumeMeterTimers() re-arms them when the socket is back.
+  suspendMeterTimers(): void {
+    for (const transaction of Array.from(this.transactions.values())) {
+      if (transaction.meterValuesTimer) {
+        clearInterval(transaction.meterValuesTimer);
+        transaction.meterValuesTimer = undefined;
+      }
+    }
+  }
+
+  resumeMeterTimers(): void {
+    this.rearmMeterTimers();
+  }
+
   private rearmMeterTimers(): void {
     for (const transaction of Array.from(this.transactions.values())) {
       if (transaction.meterValuesTimer) {

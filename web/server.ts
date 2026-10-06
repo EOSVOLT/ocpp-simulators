@@ -195,6 +195,9 @@ function tailFile(path: string, lines = 200, maxBytes = 131072): string {
 interface HealthState {
   up: boolean;
   connected: boolean | null;
+  // The station's manual-offline flag (admin /disconnect); null from a sim
+  // built before it existed.
+  offline: boolean | null;
   delays: { replyMs: number; actMs: number } | null;
   meter: { auto: boolean; intervalMs: number; kw: number | null } | null;
 }
@@ -203,6 +206,7 @@ async function checkHealth(port: number): Promise<HealthState> {
   const down: HealthState = {
     up: false,
     connected: null,
+    offline: null,
     delays: null,
     meter: null,
   };
@@ -220,11 +224,18 @@ async function checkHealth(port: number): Promise<HealthState> {
       return {
         up: true,
         connected: body.connected ?? null,
+        offline: body.offline ?? null,
         delays: body.delays ?? null,
         meter: body.meter ?? null,
       };
     } catch {
-      return { up: true, connected: null, delays: null, meter: null };
+      return {
+        up: true,
+        connected: null,
+        offline: null,
+        delays: null,
+        meter: null,
+      };
     }
   } catch {
     return down;
@@ -1059,6 +1070,7 @@ app.get("/api/sims", async (c) => {
         ...simSummary(s),
         up,
         connected: health.connected,
+        offline: health.offline,
         delays: health.delays,
         meter: health.meter,
         isTestCharger: testCharger,
@@ -1480,6 +1492,14 @@ async function proxyAdminPost(c: Context, path: string, bodyRequired = true) {
   }
 }
 
+// Take the station offline and bring it back without restarting its process.
+// POST /disconnect closes the OCPP socket and holds the station's auto-restart
+// off, so it stays offline until /connect (socket reopened, fresh
+// BootNotification) or /restart. No body on either.
+app.post("/api/sims/:id/disconnect", (c) =>
+  proxyAdminPost(c, "/disconnect", false),
+);
+app.post("/api/sims/:id/connect", (c) => proxyAdminPost(c, "/connect", false));
 // The two delay clocks. Body: { replyMs?: number, actMs?: number } (ms).
 app.post("/api/sims/:id/delays", (c) => proxyAdminPost(c, "/delays"));
 // Periodic MeterValues on/off and cadence. Body: { auto?: boolean, intervalSeconds?: number }
@@ -1952,6 +1972,22 @@ async function removeSim(s) {
   refreshSims(); refreshTxState();
 }
 
+// One button for both directions: Disconnect while the socket is open,
+// Connect while the station is manually offline.
+async function toggleConnection(id) {
+  const s = simsById[id];
+  const offline = !!(s && (s.offline || !s.connected));
+  const path = offline ? "connect" : "disconnect";
+  toast(id + (offline ? ": connecting…" : ": disconnecting…"));
+  try {
+    const r = await fetch(\`/api/sims/\${id}/\${path}\`, { method: "POST" });
+    const d = await r.json();
+    if (d.ok) toast(id + (offline ? ": connected ✓ (BootNotification sent)" : ": disconnected — stays offline until Connect or Restart"));
+    else toast(\`\${id}: \${path} failed — \${d.response || d.error || d.status}\`, true);
+  } catch (e) { toast(id + ": " + path + " error — " + e, true); }
+  refreshSims();
+}
+
 async function restartSim(id) {
   if (!confirm(id + ": restart this simulator? Any active session on it will be dropped; it reconnects in ~3s.")) return;
   toast(id + ": restarting…");
@@ -2084,15 +2120,21 @@ function renderNav() {
   for (const li of host.querySelectorAll("li")) {
     const s = simsById[li.dataset.nav];
     const conn = li.querySelector("[data-nav-conn]");
-    conn.textContent = s.connected ? "connected" : "disconnected";
+    conn.textContent = connectionLabel(s);
     conn.className = "badge " + (s.connected ? "badge-on" : "badge-off");
     li.querySelector("[data-nav-state]").textContent = s.up ? "up" : "down";
   }
   document.getElementById("nav-count").textContent = simOrder.length ? String(simOrder.length) : "";
 }
 
+// "offline" is the station holding its socket closed on purpose (Disconnect);
+// "disconnected" is a socket it would reopen by itself.
+function connectionLabel(s) {
+  return s.connected ? "connected" : s.offline ? "offline" : "disconnected";
+}
+
 function connectedBadge(el, s) {
-  el.textContent = !s.up ? "down" : s.connected ? "connected" : "disconnected";
+  el.textContent = !s.up ? "down" : connectionLabel(s);
   el.className = "badge " + (s.connected ? "badge-on" : "badge-off");
 }
 
@@ -2195,6 +2237,7 @@ function buildStation(s) {
       <span class="badge badge-off" data-fault-badge style="display:none;"></span>
       <span class="meta" data-sub>\${escapeHtml(subLine(s))}</span>
       <span class="spacer"></span>
+      <button class="restart-btn" data-connect-toggle title="Disconnect closes the OCPP socket and keeps this station offline (no auto-reconnect, no respawn) until Connect or Restart. Connect reopens it with a fresh BootNotification.">⇅ Disconnect</button>
       <button class="restart-btn" data-restart title="Restart this simulator process — reloads its .env (WS_URL etc.) + code. Drops any active session; reconnects in ~3s.">⟲ Restart</button>
       \${s.managed ? \`<button class="remove-btn" data-remove title="Stop this station's process and delete its profile (\${escapeHtml(s.profile)}). The log file is kept.">✕ Remove</button>\` : ""}
       <div class="wsurl" data-wsurl>\${escapeHtml(s.wsUrl)}/\${escapeHtml(s.cpId)}</div>
@@ -2376,6 +2419,7 @@ function buildStation(s) {
     };
     connectors.appendChild(block);
   }
+  el.querySelector("[data-connect-toggle]").onclick = () => toggleConnection(s.id);
   el.querySelector("[data-restart]").onclick = () => restartSim(s.id);
   const removeBtn = el.querySelector("[data-remove]");
   if (removeBtn) removeBtn.onclick = () => removeSim(s);
@@ -2468,6 +2512,9 @@ function updateStation(s) {
   const el = stationView.el;
   el.querySelector(".dot").className = "dot " + (s.up ? "up" : "down");
   connectedBadge(el.querySelector("[data-conn-badge]"), s);
+  const toggle = el.querySelector("[data-connect-toggle]");
+  toggle.textContent = s.offline || !s.connected ? "⇅ Connect" : "⇅ Disconnect";
+  toggle.disabled = !s.up;
   const proc = el.querySelector("[data-proc-badge]");
   proc.textContent = s.up ? "process up" + (s.pid ? " · pid " + s.pid : "") : "process down";
   proc.className = "badge " + (s.up ? "badge-info" : "badge-off");

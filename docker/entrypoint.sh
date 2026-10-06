@@ -9,7 +9,9 @@ cd /app
 export SIM_PROFILES_DIR=/app/profiles
 export SIM_LOG_DIR=/app/logs
 export SIM_ADMIN_PORT_BASE="${SIM_ADMIN_PORT_BASE:-9901}"
-export WS_URL="${WS_URL:-ws://cosmos:9000}"
+# The Cosmos node every pre-created station connects to; the image defaults it to localhost and
+# a compose stack sets it to its own Cosmos service.
+export WS_URL="${WS_URL:-ws://localhost:9000}"
 mkdir -p "$SIM_PROFILES_DIR" "$SIM_LOG_DIR"
 
 has_profile_for() { grep -qsx "CP_ID=$1" "$SIM_PROFILES_DIR"/.env.sim* 2>/dev/null; }

@@ -13,10 +13,11 @@
 //   npm run scenario -- scenarios/remote-start.json --admin http://localhost:9910
 //   npm run scenario -- scenarios/boot.json --id-tag AABBCC --json
 //
-// The VCP owns its own socket, so there is no connect/disconnect step here:
-// `connect` only waits for the admin API to answer and `disconnect` is a
-// no-op. The fleet scenario runs one station per invocation; point it at each
-// admin port of a run_simulators.sh fleet.
+// `disconnect` closes the station's OCPP socket through POST /disconnect (the
+// process stays up and holds its auto-restart off) and `connect` reopens it
+// through POST /connect, which sends the boot sequence again, then waits for
+// /health to report the socket open. The fleet scenario runs one station per
+// invocation; point it at each admin port of a run_simulators.sh fleet.
 require("dotenv").config();
 
 import { readFileSync } from "node:fs";
@@ -205,6 +206,19 @@ class Station {
     throw new ScenarioError(`${action} was not answered (${outcome.status})`);
   }
 
+  // Reopen the socket (the station sends BootNotification and the connector
+  // statuses by itself) and wait until /health reports it open. A station that
+  // is already connected answers at once without a new boot.
+  async connect(timeoutSeconds: number): Promise<void> {
+    await this.http("POST", "/connect");
+    await this.waitForHealth(timeoutSeconds);
+  }
+
+  // Close the socket and keep it closed until a connect step (or /restart).
+  async disconnect(): Promise<void> {
+    await this.http("POST", "/disconnect");
+  }
+
   async waitForHealth(timeoutSeconds: number): Promise<void> {
     const deadline = Date.now() + timeoutSeconds * 1000;
     while (Date.now() < deadline) {
@@ -351,10 +365,10 @@ class Station {
 async function runStep(station: Station, step: Step): Promise<any> {
   switch (step.step) {
     case "connect":
-      await station.waitForHealth(Number(step.timeoutSeconds ?? 30));
+      await station.connect(Number(step.timeoutSeconds ?? 30));
       return null;
     case "disconnect":
-      // The VCP process owns its socket; stop the process to disconnect.
+      await station.disconnect();
       return null;
     case "boot":
       return station.call("BootNotification", {

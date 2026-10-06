@@ -191,7 +191,7 @@ Cosmos → charger — without hardware, and for the staging fleet.
 
 ### Pointing a station at the local stack
 
-Cosmos (`spark_cosmos`) listens on `ws://localhost:9000` and routes by the station id in the path,
+Cosmos listens on `ws://localhost:9000` and routes by the station id in the path,
 so a station connects to `ws://localhost:9000/<CP_ID>` with the `ocpp1.6` subprotocol. The env
 file for one station:
 
@@ -210,7 +210,7 @@ curl -s localhost:9910/health         # {"status":"OK","cpId":"SIM-0002","connec
 
 **Registration.** Cosmos refuses the WebSocket handshake for a charge box it does not know, and
 refuses a StatusNotification for a connector missing from the charge box document. With cosmos-hub
-running (`spark_cosmos_hub`, as in the docker stack) **Spark registers the charger itself**: create a
+running (as in Spark's docker stack) **Spark registers the charger itself**: create a
 charger in Spark's panel whose serial equals `CP_ID` and the `chargeboxes` document appears. For a
 bare Cosmos node, or a station that should connect before it exists in Spark, there is a shortcut
 that upserts the document straight into Cosmos's Mongo (`chargeBox` upper cased, `status: "open"`,
@@ -287,13 +287,14 @@ curl -s -X POST localhost:9910/meter-tick -H 'content-type: application/json' -d
 
 | Endpoint | |
 | --- | --- |
-| `GET /health` | JSON: `cpId`, `connected`, `delays`, `meter`, open `transactions` |
+| `GET /health` | JSON: `cpId`, `connected`, `offline` (held closed by `/disconnect`), `delays`, `meter`, open `transactions` |
 | `GET` / `POST /delays` | the two clocks, `{"replyMs", "actMs"}`, either optional on POST |
 | `GET /frames?limit=N` | the last N OCPP frames in and out (500 kept) and `lastReply`, the CSMS's last CALLRESULT/CALLERROR to one of the station's own calls |
 | `GET` / `POST /meter` | periodic MeterValues `auto` on/off and `intervalSeconds` |
 | `POST /meter-tick` | one MeterValues now for `{"connectorId"}` (409 without a transaction) |
 | `POST /execute-sync` | like `/execute`, but waits for and returns the CSMS's reply to that exact call |
 | `GET /transactions` | the open transactions with their live `meterWh` |
+| `POST /disconnect` / `POST /connect` | close the OCPP socket and keep it closed (no auto-reconnect; the process and the admin API stay up) / reopen it with a fresh BootNotification; `{"ok", "connected"}`, 502 when the CSMS refuses |
 | `/charging-power`, `/charge-target`, `/fail-mode`, `/fault`, `/ws-url`, `/restart` | the fleet's fault injection and speed controls (see `src/vcp.ts`) |
 
 ### Scenarios
@@ -312,8 +313,9 @@ npm run scenario -- scenarios/remote-start.json --admin http://localhost:9910   
 Steps: `boot`, `heartbeat`, `status`, `authorize`, `startTransaction`, `expectTransactionId`,
 `meterValues` (`seconds`, `intervalSeconds`, `powerW`), `stopTransaction`, `session` (the whole
 sequence in one step), `wait`, `waitForCommand` (`action`, `timeoutSeconds`; blocks until the CSMS
-sends that command), `expect`. `connect` only waits for the admin API and `disconnect` is a no-op,
-because the VCP process owns its socket. `--id-tag` rewrites the idTag in every step. The `fleet`
+sends that command), `expect`, `disconnect` (`POST /disconnect`: the socket closes and stays
+closed) and `connect` (`POST /connect`, then waits for `/health` to report the socket open; the
+station boots again by itself). `--id-tag` rewrites the idTag in every step. The `fleet`
 scenario runs one station per invocation and measures no round-trip percentiles; run a fleet with
 `run_simulators.sh` and point the runner at each admin port.
 
@@ -333,6 +335,16 @@ charging speed, the two delay knobs with their presets, auto meter, RemoteStart 
 faults, auto-stop target), an Actions card with Boot, Heartbeat, the quick 0 / 1 kWh transactions
 and one card per connector, and a Frames card with the last 200 OCPP frames both ways (Clear hides
 the ones seen so far), the CSMS's last reply and the process log.
+
+Next to Restart, one button toggles between **Disconnect** and **Connect**. Disconnect closes the
+station's OCPP socket and nothing else: the process and its admin API stay up, the station's own
+auto-restart is held off, and the panel's restart loop never fires because the process never exits,
+so the station stays offline (badge `offline`) until Connect or Restart. In Spark this is a charger
+dropping off the network: Cosmos raises its Disconnect event, the charger's connection status turns
+offline and any session on it is left to Spark's own handling. Connect reopens the socket and the
+station boots as on a fresh start, so Cosmos sees Connect and a new BootNotification (then the
+connector statuses) and Spark shows the charger online again. Restart is the heavier tool: it exits
+the process, which reloads `.env` and code and reconnects in ~3 s.
 
 A connector card is the one place to drive that connector: its live line (the sim's transaction,
 idTag and register; the scheduler's mode and running session with its elapsed time), Plug in
@@ -375,7 +387,7 @@ reports `managed`, `pid`, `profile` and `log` per station. Stopping the panel (S
 stops the stations it manages.
 
 In Spark's dev stack (`docker compose --profile simulator up`) the container starts with no
-stations, `SIM_PROFILES_DIR=/app/profiles`, `SIM_LOG_DIR=/app/logs`, `WS_URL=ws://cosmos:9000`
+stations, `SIM_PROFILES_DIR=/app/profiles`, `SIM_LOG_DIR=/app/logs`, `WS_URL` set to its Cosmos node
 and `AUTO_EXCLUDE_CP_IDS=*`; stations are added from the panel on `:8190`. Setting
 `OCPP_SIM_STATIONS` still pre-provisions profiles at start, in the same shape, for ids without one.
 
@@ -420,7 +432,7 @@ in one container, started by `docker/entrypoint.sh` (sets `SIM_PROFILES_DIR=/app
 `SIM_LOG_DIR=/app/logs`, pre-creates the stations in `OCPP_SIM_STATIONS` if any, marks every
 station a test charger so the scheduler never auto-cycles it, and starts the panel on `:8080`).
 Mount `/app/profiles` and `/app/logs` to keep stations across restarts, and set `WS_URL` to the
-Cosmos node (`ws://cosmos:9000` in Spark's dev stack). `Dockerfile.vcp` is upstream's image for one
+Cosmos node (`ws://<cosmos host>:9000`; Spark's dev stack sets its own service). `Dockerfile.vcp` is upstream's image for one
 headless station driven by its admin API. The image is not published anywhere: Spark's dev stack
 builds it from a developer's checkout (`docker compose --profile simulator up -d --build` there).
 

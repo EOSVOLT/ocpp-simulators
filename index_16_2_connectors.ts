@@ -11,30 +11,34 @@ const vcp = new VCP({
   ocppVersion: OcppVersion.OCPP_1_6,
   basicAuthPassword: process.env.PASSWORD ?? undefined,
   adminPort: Number.parseInt(process.env.ADMIN_PORT ?? "9999"),
+  // Runs once the socket is open: on the first connect and again after an
+  // admin /disconnect + /connect.
+  boot: (station) => {
+    station.send(
+      bootNotificationOcppMessage.request({
+        chargePointVendor: "Solidstudio",
+        chargePointModel: "VirtualChargePoint",
+        chargePointSerialNumber: "S001",
+        firmwareVersion: "1.0.0",
+      }),
+    );
+    station.send(
+      statusNotificationOcppMessage.request({
+        connectorId: 1,
+        errorCode: "NoError",
+        status: "Available",
+      }),
+    );
+    station.send(
+      statusNotificationOcppMessage.request({
+        connectorId: 2,
+        errorCode: "NoError",
+        status: "Available",
+      }),
+    );
+  },
 });
 
 (async () => {
   await vcp.connect();
-  vcp.send(
-    bootNotificationOcppMessage.request({
-      chargePointVendor: "Solidstudio",
-      chargePointModel: "VirtualChargePoint",
-      chargePointSerialNumber: "S001",
-      firmwareVersion: "1.0.0",
-    }),
-  );
-  vcp.send(
-    statusNotificationOcppMessage.request({
-      connectorId: 1,
-      errorCode: "NoError",
-      status: "Available",
-    }),
-  );
-  vcp.send(
-    statusNotificationOcppMessage.request({
-      connectorId: 2,
-      errorCode: "NoError",
-      status: "Available",
-    }),
-  );
 })();

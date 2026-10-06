@@ -3,7 +3,7 @@
 // A single Cosmos node asks its HUB whether a charge box is online somewhere
 // else before it accepts a connection: GET {HUB}session/online/:chargeBox must
 // answer {"state":[<online: boolean>, <node: string>]} or the node refuses to
-// serve. The local docker stack runs a real cosmos-hub (spark_cosmos_hub), so
+// serve. A docker stack that runs a real cosmos-hub does not need it, so
 // this is only for running a bare Cosmos node (`node ace serve` from the
 // CoSMos checkout) with no hub at all: it answers "not online anywhere" for
 // every id and 404 for anything else, which is what a one-node deployment
