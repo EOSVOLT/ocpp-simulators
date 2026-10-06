@@ -5,7 +5,7 @@
 // single dashboard page. Binds to 127.0.0.1 by default — reach it over an SSH
 // tunnel so nothing is exposed publicly:
 //
-//   gcloud compute ssh ocpp-sim --zone=us-central1-b -- -N -L 8080:localhost:8080
+//   ssh <simulator host> -N -L 8080:localhost:8080
 //   # then open http://localhost:8080
 //
 // Config comes from the .env.sim* profiles in SIM_PROFILES_DIR (the repo root
@@ -86,14 +86,15 @@ const TX_SESSION_LIMIT = Number.parseInt(
 );
 // Dedicated fault-injection test chargers (comma-separated CP IDs). These are
 // NOT auto-cycled by the in-process scheduler -- the scheduler leaves connector
-// 1 alone so an external driver (e.g. eosvolt's RemoteStartTransaction) owns it
+// 1 alone so an external driver (the CSMS's RemoteStartTransaction) owns it
 // -- and they are the ONLY sims that get the fault-injection controls in the
 // panel (RemoteStart fail-mode + Faulted / High-temperature toggles). The live
-// fleet stays clean. Default: the gcp-sim11 / gcp-sim12 test chargers. "*"
-// makes every station a test charger, which is what a local dev stack wants:
-// nothing auto-cycles and every station gets the fault controls.
+// fleet stays clean. Default: none, so a fleet deployment names its test
+// chargers in AUTO_EXCLUDE_CP_IDS. "*" makes every station a test charger,
+// which is what a local dev stack wants: nothing auto-cycles and every station
+// gets the fault controls.
 const TEST_CHARGER_CP_IDS = new Set(
-  (process.env.AUTO_EXCLUDE_CP_IDS ?? "gcp-sim11,gcp-sim12,gcp-sim14")
+  (process.env.AUTO_EXCLUDE_CP_IDS ?? "")
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean),
@@ -709,7 +710,7 @@ async function startConfirmed(
   // Non-Accepted idTag: the sim itself sends StopTransaction(DeAuthorized).
   if (outcome.payload?.idTagInfo?.status !== "Accepted")
     return { ok: false, reason: "not_authorized" };
-  // The CSMS (cosmos-staging) answers a StartTransaction on a connector that
+  // The CSMS may answer a StartTransaction on a connector that
   // still has an open session with THAT session's id instead of a new one --
   // e.g. after a StopTransaction it never processed. Accepting it silently
   // "continues" an old session (meter reset to 0, days-long sessions). A

@@ -4,11 +4,11 @@
 #
 # Two connection models are supported via WS_MODE:
 #
-#   shared (default) — staging serves OCPP over ONE TLS endpoint
-#       (wss://cosmos-staging.eosvolt.com) and routes by the CP_ID in the URL
-#       path. Each simulator is distinguished by its distinct CP_ID, so no
-#       per-port juggling is needed. This is the endpoint verified reachable
-#       (the :3000-3100 pool was not reachable from this host).
+#   shared (default) — the CSMS serves OCPP over ONE endpoint and routes by
+#       the CP_ID in the URL path. Each simulator is distinguished by its
+#       distinct CP_ID, so no per-port juggling is needed. Set SHARED_WS_URL
+#       (host only, e.g. wss://csms.example.com), or leave it empty to use
+#       each profile's own WS_URL.
 #
 #   ports — legacy model: the server accepts one connection per port from a
 #       given IP, so each simulator needs a distinct port from the 3000-3100
@@ -37,13 +37,14 @@ PROBE_RETRIES="${PROBE_RETRIES:-2}"   # extra attempts before marking a port clo
 # --- shared-mode configuration ---------------------------------------------
 # If set, overrides each profile's WS_URL (host only, no port/path). Empty ->
 # each simulator uses the WS_URL from its own .env.simN file.
-SHARED_WS_URL="${SHARED_WS_URL:-wss://cosmos-staging.eosvolt.com}"
-SHARED_PROBE_HOST="${SHARED_PROBE_HOST:-cosmos-staging.eosvolt.com}"
+SHARED_WS_URL="${SHARED_WS_URL:-}"
+# Host for the HTTPS pre-flight check; derived from SHARED_WS_URL unless set. Empty skips it.
+SHARED_PROBE_HOST="${SHARED_PROBE_HOST:-${SHARED_WS_URL#*://}}"
 SHARED_PROBE_PORT="${SHARED_PROBE_PORT:-443}"
 
 # --- ports-mode configuration ----------------------------------------------
 WS_SCHEME="${WS_SCHEME:-ws}"
-WS_HOST="${WS_HOST:-cosmos-staging.eosvolt.com}"
+WS_HOST="${WS_HOST:-}"   # required in ports mode
 PORT_START="${PORT_START:-3000}"
 PORT_END="${PORT_END:-3100}"
 
@@ -150,11 +151,13 @@ launch_sim() {
 run_shared_mode() {
   echo "[orchestrator] Mode: shared (path-routed by CP_ID)"
   # Pre-flight over TLS (matches how the simulator actually connects). A bare
-  # TCP probe gives false negatives against the staging proxy, so use curl and
-  # treat ANY HTTP response (incl. 5xx) as "proxy reachable". Advisory only:
-  # never abort here -- auto-restart will keep retrying the real WS connection.
-  echo "[orchestrator] Pre-flight: https://${SHARED_PROBE_HOST}/ ..."
-  if command -v curl >/dev/null 2>&1; then
+  # TCP probe gives false negatives behind a TLS proxy, so use curl and treat
+  # ANY HTTP response (incl. 5xx) as "proxy reachable". Advisory only: never
+  # abort here -- auto-restart will keep retrying the real WS connection.
+  if [[ -z "$SHARED_PROBE_HOST" ]]; then
+    echo "[orchestrator] Pre-flight skipped: no SHARED_WS_URL / SHARED_PROBE_HOST, each profile's WS_URL is used."
+  elif command -v curl >/dev/null 2>&1; then
+    echo "[orchestrator] Pre-flight: https://${SHARED_PROBE_HOST}/ ..."
     local code
     code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time "$((PROBE_TIMEOUT * 3))" "https://${SHARED_PROBE_HOST}/" 2>/dev/null)"
     if [[ -n "$code" && "$code" != "000" ]]; then
@@ -176,6 +179,10 @@ run_shared_mode() {
 
 run_ports_mode() {
   echo "[orchestrator] Mode: ports (legacy per-port)"
+  if [[ -z "$WS_HOST" ]]; then
+    echo "[orchestrator] ERROR: WS_HOST is required in ports mode (the CSMS host without scheme or port)." >&2
+    exit 1
+  fi
   echo "[orchestrator] Probing ${WS_HOST} ports ${PORT_START}-${PORT_END} for ${NUM_SIMS} open port(s)..."
   local port
   REACHABLE=()

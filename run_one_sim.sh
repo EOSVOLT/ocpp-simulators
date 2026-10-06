@@ -2,16 +2,16 @@
 #
 # Launch a SINGLE simulator profile by number, with the same crash-restart
 # supervision the orchestrator uses -- without pulling in the whole
-# NUM_SIMS fleet. Intended for on-demand / dedicated sims (e.g. the
-# gcp-sim11 fault-injection charger) that must not permanently add to the
-# resident set of the OOM-constrained staging VM.
+# NUM_SIMS fleet. Intended for on-demand / dedicated sims (e.g. a
+# fault-injection test charger) that must not permanently add to the
+# resident set of a memory-constrained host.
 #
 # Usage:
 #   ./run_one_sim.sh 11                 # run .env.sim11 until Ctrl-C
 #   RUN_SECONDS=30 ./run_one_sim.sh 11  # run 30s then tear down (smoke)
 #
 # WS_URL is taken from the profile's .env.simN (do NOT export WS_URL here --
-# staging is path-routed by CP_ID over the single wss host in the profile).
+# the CSMS is path-routed by CP_ID over the single host in the profile).
 set -uo pipefail
 
 SUFFIX_NUM="${1:-}"

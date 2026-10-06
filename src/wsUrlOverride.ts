@@ -9,7 +9,7 @@
 // to fall back to the .env baseline.
 //
 // Stored as a small JSON map keyed by CP_ID at the repo root:
-//   { "gcp-sim11": "ws://cosmos.eosvolt.com" }
+//   { "CP-0001": "ws://csms.example.com" }
 //
 // Changing an override takes effect on the next (re)connect; the /ws-url admin
 // endpoint persists the value and then restarts the process so the fresh boot

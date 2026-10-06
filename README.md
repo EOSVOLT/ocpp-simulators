@@ -382,9 +382,9 @@ and `AUTO_EXCLUDE_CP_IDS=*`; stations are added from the panel on `:8190`. Setti
 ### Fleet scripts
 
 `run_simulators.sh` launches `NUM_SIMS` stations from `.env.sim1..N` under a crash-restart loop
-(`WS_MODE=shared` routes every station through one host by `CP_ID`; `SHARED_WS_URL` overrides the
-profiles' `WS_URL` and defaults to the staging host, so set it, or `SHARED_WS_URL=` for the
-profiles' own value, when running locally). `run_one_sim.sh 11` runs a single profile the same way.
+(`WS_MODE=shared` routes every station through one host by `CP_ID`; set `SHARED_WS_URL` to that
+host, e.g. `wss://csms.example.com`, or leave it empty for each profile's own `WS_URL`;
+`WS_MODE=ports` needs `WS_HOST`). `run_one_sim.sh 11` runs a single profile the same way.
 Both write `logs/sim<N>.log`, which the panel tails.
 
 ### Cosmos behaviours that affect a simulator
