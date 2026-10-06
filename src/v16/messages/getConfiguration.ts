@@ -29,34 +29,29 @@ class GetConfigurationOcppMessage extends OcppIncoming<
     vcp: VCP,
     call: OcppCall<z.infer<GetConfigurationReqType>>,
   ): Promise<void> => {
-    vcp.respond(
-      this.response(call, {
-        configurationKey: [
-          {
-            key: "SupportedFeatureProfiles",
-            readonly: true,
-            value:
-              "Core,FirmwareManagement,LocalAuthListManagement,Reservation,SmartCharging,RemoteTrigger",
-          },
-          {
-            key: "ChargeProfileMaxStackLevel",
-            readonly: true,
-            value: "99",
-          },
-          {
-            key: "HeartbeatInterval",
-            readonly: false,
-            value: "300",
-          },
-          {
-            key: "GetConfigurationMaxKeys",
-            readonly: true,
-            value: "99",
-          },
-        ],
-        unknownKey: [],
-      }),
-    );
+    // No key list means everything; otherwise only the asked-for keys, with
+    // the ones this station does not have reported in unknownKey.
+    const requested = call.payload.key ?? [];
+    if (requested.length === 0) {
+      vcp.respond(
+        this.response(call, {
+          configurationKey: vcp.configuration.all(),
+          unknownKey: [],
+        }),
+      );
+      return;
+    }
+    const configurationKey = [];
+    const unknownKey = [];
+    for (const key of requested) {
+      const entry = vcp.configuration.get(key);
+      if (entry) {
+        configurationKey.push({ key, ...entry });
+      } else {
+        unknownKey.push(key);
+      }
+    }
+    vcp.respond(this.response(call, { configurationKey, unknownKey }));
   };
 }
 

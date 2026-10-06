@@ -5,6 +5,7 @@ import { serve, type ServerType } from "@hono/node-server";
 import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
+import { ChargePointConfiguration } from "./chargePointConfiguration";
 import { logger } from "./logger";
 import { call } from "./messageFactory";
 import type { OcppCall, OcppCallError, OcppCallResult } from "./ocppMessage";
@@ -24,6 +25,12 @@ import {
 import { TransactionManager } from "./transactionManager";
 import { heartbeatOcppMessage } from "./v16/messages/heartbeat";
 import { close } from "./close";
+import {
+  clearWsUrlOverride,
+  normalizeWsUrl,
+  readWsUrlOverride,
+  writeWsUrlOverride,
+} from "./wsUrlOverride";
 
 interface VCPOptions {
   ocppVersion: OcppVersion;
@@ -33,6 +40,69 @@ interface VCPOptions {
   adminPort?: number;
 }
 
+// Runtime fault injection for RemoteStartTransaction, used to exercise the
+// backend's authorization-recapture path. See remoteStartTransaction.ts.
+//   off             - normal behaviour (accept + StartTransaction + Charging)
+//   ignore          - drop the request: send NO response at all, do not start.
+//                     Connector stays Available. Backend must time out & recapture.
+//   reject          - respond RemoteStartTransaction.conf = Rejected, do not
+//                     start. Connector stays Available. Conformant decline.
+//   accept_no_start - respond Accepted but never send StartTransaction and stay
+//                     Available. Backend thinks it was accepted but nothing charges.
+export type RemoteStartFailMode =
+  | "off"
+  | "ignore"
+  | "reject"
+  | "accept_no_start";
+
+const DEFAULT_FAIL_MODE_MS = 60_000;
+
+// How long a charger takes between answering RemoteStart/RemoteStop and doing
+// something about it (Authorize, StartTransaction, the status reports;
+// StopTransaction). A real charger needs about a second. Settable at runtime
+// through the admin /delays endpoint; ACT_DELAY_MS seeds it.
+const DEFAULT_ACT_DELAY_MS = 1000;
+const MAX_DELAY_MS = 600_000;
+
+// The last N OCPP frames in and out, kept for the admin /frames endpoint so a
+// panel can show the wire without tailing a log file.
+const FRAMES_KEPT = 500;
+
+export interface Frame {
+  at: string;
+  direction: "in" | "out";
+  text: string;
+}
+
+// The payload of the last CALLRESULT or CALLERROR the CSMS sent for one of
+// this station's own calls, with the call it answered.
+export type LastReply =
+  | {
+      kind: "result";
+      action: string;
+      messageId: string;
+      at: string;
+      // biome-ignore lint/suspicious/noExplicitAny: ocpp payload
+      payload: any;
+    }
+  | {
+      kind: "error";
+      action: string | null;
+      messageId: string;
+      at: string;
+      errorCode: string;
+      errorDescription: string;
+      // biome-ignore lint/suspicious/noExplicitAny: ocpp payload
+      errorDetails: any;
+    };
+
+const parseDelay = (raw: string | undefined, fallback: number): number => {
+  const value = Number.parseInt(raw ?? "");
+  return Number.isNaN(value) || value < 0 || value > MAX_DELAY_MS
+    ? fallback
+    : value;
+};
+
 interface LogEntry {
   type: "Application";
   timestamp: string;
@@ -40,6 +110,12 @@ interface LogEntry {
   message: string;
   metadata: Record<string, unknown>;
 }
+
+type CallOutcome =
+  // biome-ignore lint/suspicious/noExplicitAny: ocpp payload
+  | { status: "result"; payload: any }
+  | { status: "error"; errorCode: string; errorDescription: string }
+  | { status: "timeout" };
 
 export class VCP {
   private ws?: WebSocket;
@@ -51,13 +127,349 @@ export class VCP {
 
   private postMessageActions: Record<string, () => void | Promise<void>> = {};
 
+  // Waiters for /execute-sync: resolved with the CSMS's actual reply (keyed by
+  // the OCPP messageId) so admin callers learn exactly what the CSMS answered
+  // to *their* call, instead of guessing from local state afterwards.
+  private callWaiters = new Map<string, (outcome: CallOutcome) => void>();
+  // StartTransaction calls whose /execute-sync caller gave up waiting. If the
+  // .conf still arrives later, nobody owns that transaction -- close it at once
+  // rather than let it meter forever as an orphan.
+  private abandonedStarts = new Set<string>();
+
+  // RemoteStartTransaction fault injection (runtime-toggled via /fail-mode).
+  remoteStartFailMode: RemoteStartFailMode = "off";
+  private remoteStartFailUntil = 0;
+  private remoteStartFailTimer?: ReturnType<typeof setTimeout>;
+
   transactionManager = new TransactionManager();
+
+  // OCPP 1.6 configuration keys (GetConfiguration / ChangeConfiguration). The
+  // MeterValueSampleInterval entry mirrors transactionManager.meterIntervalMs.
+  configuration = new ChargePointConfiguration(
+    Math.round(this.transactionManager.meterIntervalMs / 1000),
+  );
+
+  // Two independent clocks, both per station and both runtime-settable through
+  // the admin /delays endpoint.
+  //
+  // replyDelayMs holds every CALLRESULT and CALLERROR to a CSMS command (the
+  // answer to RemoteStart, RemoteStop, Reset, TriggerMessage, all of them) for
+  // that long before it goes on the wire. Nothing else is held: heartbeats,
+  // status reports and meter values keep flowing, so the socket stays alive.
+  // It reproduces a connected but slow charger. Set above Spark's read
+  // timeout (COSMOS_TIMEOUT, 8 s by default, 10 s in the dev env) and Spark
+  // reports the command unreachable while this station still accepts it later.
+  //
+  // actDelayMs is how long the station waits after receiving RemoteStart or
+  // RemoteStop before acting on it. The two are independent, so both orders a
+  // real charger produces can be reproduced: answer first then act (the
+  // usual), or hold the answer and act at once, which is how a
+  // StartTransaction reaches the CSMS while the RemoteStart is still open.
+  replyDelayMs = parseDelay(process.env.REPLY_DELAY_MS, 0);
+  actDelayMs = parseDelay(process.env.ACT_DELAY_MS, DEFAULT_ACT_DELAY_MS);
+
+  private frames: Frame[] = [];
+  lastReply: LastReply | null = null;
+
+  setDelays(delays: { replyMs?: number; actMs?: number }): void {
+    if (delays.replyMs !== undefined) {
+      this.replyDelayMs = delays.replyMs;
+      logger.info(
+        this.replyDelayMs === 0
+          ? "Answering CSMS commands at once"
+          : `Holding every answer to a CSMS command for ${this.replyDelayMs} ms`,
+      );
+    }
+    if (delays.actMs !== undefined) {
+      this.actDelayMs = delays.actMs;
+      logger.info(
+        `Acting on RemoteStart/RemoteStop ${this.actDelayMs} ms after they arrive`,
+      );
+    }
+  }
+
+  getDelayState() {
+    return { replyMs: this.replyDelayMs, actMs: this.actDelayMs };
+  }
+
+  private recordFrame(direction: "in" | "out", text: string): void {
+    this.frames.push({ at: new Date().toISOString(), direction, text });
+    if (this.frames.length > FRAMES_KEPT) {
+      this.frames.splice(0, this.frames.length - FRAMES_KEPT);
+    }
+  }
+
+  getFrames(limit = FRAMES_KEPT): Frame[] {
+    return this.frames.slice(-Math.max(1, Math.min(limit, FRAMES_KEPT)));
+  }
+
+  getHealthState() {
+    return {
+      status: "OK",
+      cpId: this.vcpOptions.chargePointId,
+      connected: this.ws?.readyState === WebSocket.OPEN,
+      delays: this.getDelayState(),
+      meter: this.getMeterState(),
+      transactions: this.transactionManager.transactions.size,
+    };
+  }
+
+  getMeterState() {
+    return {
+      auto: this.transactionManager.autoMeterValues,
+      intervalMs: this.transactionManager.meterIntervalMs,
+      kw:
+        this.transactionManager.chargingPowerW == null
+          ? null
+          : this.transactionManager.chargingPowerW / 1000,
+    };
+  }
+
+  // Keep the configuration key and the timer in step whichever side changes.
+  setMeterIntervalSeconds(seconds: number): void {
+    this.transactionManager.setMeterIntervalMs(seconds * 1000);
+    this.configuration.set("MeterValueSampleInterval", String(seconds));
+  }
+
+  // Set/clear the RemoteStartTransaction fail mode. A positive durationMs
+  // (default 60s) auto-clears back to "off" so a forgotten toggle can't wedge
+  // the charger permanently; durationMs <= 0 means "until explicitly cleared".
+  setRemoteStartFailMode(mode: RemoteStartFailMode, durationMs?: number): void {
+    if (this.remoteStartFailTimer) {
+      clearTimeout(this.remoteStartFailTimer);
+      this.remoteStartFailTimer = undefined;
+    }
+    this.remoteStartFailMode = mode;
+    if (mode === "off") {
+      this.remoteStartFailUntil = 0;
+      logger.info("RemoteStart fail mode cleared (off)");
+      return;
+    }
+    const ttl = durationMs ?? DEFAULT_FAIL_MODE_MS;
+    if (ttl > 0) {
+      this.remoteStartFailUntil = Date.now() + ttl;
+      this.remoteStartFailTimer = setTimeout(() => {
+        logger.info(`RemoteStart fail mode "${mode}" expired -> off`);
+        this.remoteStartFailMode = "off";
+        this.remoteStartFailUntil = 0;
+        this.remoteStartFailTimer = undefined;
+      }, ttl);
+    } else {
+      this.remoteStartFailUntil = 0; // sticky until cleared
+    }
+    const ttlLabel =
+      ttl > 0
+        ? ` for ${ttl >= 1000 ? `${Math.round(ttl / 1000)}s` : `${ttl}ms`}`
+        : " (until cleared)";
+    logger.info(`RemoteStart fail mode set to "${mode}"${ttlLabel}`);
+  }
+
+  getRemoteStartFailState() {
+    return {
+      mode: this.remoteStartFailMode,
+      expiresInMs:
+        this.remoteStartFailUntil > 0
+          ? Math.max(0, this.remoteStartFailUntil - Date.now())
+          : null,
+    };
+  }
+
+  // Connector fault injection (runtime-toggled via /fault). Used to exercise the
+  // backend's fault-email logic. Mutually exclusive per connector: asserting one
+  // condition clears the other, since a connector reports a single
+  // StatusNotification errorCode at a time.
+  //   faulted          -> status=Faulted, errorCode=OtherError
+  //   high_temperature -> status=Faulted, errorCode=HighTemperature
+  //   (both off)       -> status=Available, errorCode=NoError
+  private connectorFaults: Map<
+    number,
+    { faulted: boolean; highTemperature: boolean }
+  > = new Map();
+
+  setConnectorFault(
+    connectorId: number,
+    type: "faulted" | "high_temperature",
+    on: boolean,
+  ): void {
+    const state = this.connectorFaults.get(connectorId) ?? {
+      faulted: false,
+      highTemperature: false,
+    };
+    if (on) {
+      // mutually exclusive: asserting one condition clears the other
+      state.faulted = type === "faulted";
+      state.highTemperature = type === "high_temperature";
+    } else if (type === "faulted") {
+      state.faulted = false;
+    } else {
+      state.highTemperature = false;
+    }
+    this.connectorFaults.set(connectorId, state);
+    this.emitConnectorStatus(connectorId, state);
+  }
+
+  private emitConnectorStatus(
+    connectorId: number,
+    state: { faulted: boolean; highTemperature: boolean },
+  ): void {
+    let status = "Available";
+    let errorCode = "NoError";
+    if (state.faulted) {
+      status = "Faulted";
+      errorCode = "OtherError";
+    } else if (state.highTemperature) {
+      status = "Faulted";
+      errorCode = "HighTemperature";
+    }
+    logger.info(
+      `Connector ${connectorId} fault -> status=${status} errorCode=${errorCode}`,
+    );
+    try {
+      this.send(call("StatusNotification", { connectorId, errorCode, status }));
+    } catch (err) {
+      // ws may be mid-reconnect; state is still recorded and GET /fault reflects it
+      logger.warn(`Could not emit StatusNotification for fault toggle: ${err}`);
+    }
+  }
+
+  getConnectorFaultState() {
+    const out: Record<number, { faulted: boolean; highTemperature: boolean }> =
+      {};
+    for (const [connectorId, state] of Array.from(this.connectorFaults)) {
+      out[connectorId] = { ...state };
+    }
+    return out;
+  }
+
+  // Auto-stop energy target (Wh). When set, the charger stops ITSELF the moment
+  // an active session's energy register reaches this value -- regardless of who
+  // started the session (e.g. the mobile app via RemoteStart) -- and records
+  // meterStop at exactly this target, so the session lands on a precise energy
+  // (e.g. 1.000 kWh) instead of overshooting. null = disarmed. Sticky: stays
+  // armed across sessions until cleared. Enforced in the MeterValues tick
+  // (src/v16/messages/startTransaction.ts). Runtime-toggled via /charge-target.
+  chargeTargetWh: number | null = null;
+
+  setChargeTargetKwh(kwh: number | null): void {
+    this.chargeTargetWh = kwh == null ? null : Math.round(kwh * 1000);
+    logger.info(
+      `Charge auto-stop target ${this.chargeTargetWh == null ? "cleared" : `set to ${this.chargeTargetWh} Wh (${kwh} kWh)`}`,
+    );
+  }
+
+  getChargeTargetState() {
+    return {
+      kwh: this.chargeTargetWh == null ? null : this.chargeTargetWh / 1000,
+    };
+  }
+
+  // Charging speed (kW) -> controls how fast the energy register climbs and thus
+  // the MeterValues readings sent to the CSMS. null restores the legacy fixed
+  // rate. Runtime-toggled via /charging-power.
+  setChargingPowerKw(kw: number | null): void {
+    const watts = kw == null ? null : Math.round(kw * 1000);
+    this.transactionManager.setChargingPowerW(watts);
+    logger.info(
+      `Charging power set to ${kw == null ? "default (legacy rate)" : `${kw} kW`}`,
+    );
+  }
+
+  getChargingPowerState() {
+    const w = this.transactionManager.chargingPowerW;
+    return {
+      kw: w == null ? null : w / 1000,
+      intervalMs: this.transactionManager.meterIntervalMs,
+    };
+  }
+
+  // OCPP endpoint state: the base URL this VCP is currently connected to, plus
+  // the .env baseline and any persisted override. `url` is the bare host; the
+  // full connect URL appends "/<CP_ID>". Runtime-changed via /ws-url.
+  getWsUrlState() {
+    const cpId = this.vcpOptions.chargePointId;
+    const override = readWsUrlOverride(cpId);
+    return {
+      cpId,
+      url: this.vcpOptions.endpoint,
+      fullUrl: `${this.vcpOptions.endpoint}/${cpId}`,
+      envUrl: process.env.WS_URL ?? null,
+      override,
+      source: override ? "override" : "env",
+    };
+  }
 
   constructor(private vcpOptions: VCPOptions) {
     this.messageHandler = resolveMessageHandler(vcpOptions.ocppVersion);
     if (vcpOptions.adminPort) {
       const adminApi = new Hono();
-      adminApi.get("/health", (c) => c.text("OK"));
+      adminApi.get("/health", (c) => c.json(this.getHealthState()));
+      // The two delay clocks. Either field may be omitted to leave it alone.
+      adminApi.get("/delays", (c) => c.json(this.getDelayState()));
+      adminApi.post(
+        "/delays",
+        zValidator(
+          "json",
+          z.object({
+            replyMs: z.number().int().min(0).max(MAX_DELAY_MS).optional(),
+            actMs: z.number().int().min(0).max(MAX_DELAY_MS).optional(),
+          }),
+        ),
+        (c) => {
+          this.setDelays(c.req.valid("json"));
+          return c.json(this.getDelayState());
+        },
+      );
+      // The last OCPP frames both ways, plus the CSMS's last reply to one of
+      // this station's own calls.
+      adminApi.get("/frames", (c) => {
+        const limit = Number.parseInt(c.req.query("limit") ?? "");
+        return c.json({
+          frames: this.getFrames(Number.isNaN(limit) ? undefined : limit),
+          lastReply: this.lastReply,
+        });
+      });
+      // Periodic MeterValues on/off for every transaction, and the cadence in
+      // seconds (the MeterValueSampleInterval configuration key).
+      adminApi.get("/meter", (c) => c.json(this.getMeterState()));
+      adminApi.post(
+        "/meter",
+        zValidator(
+          "json",
+          z.object({
+            auto: z.boolean().optional(),
+            intervalSeconds: z.number().positive().optional(),
+          }),
+        ),
+        (c) => {
+          const { auto, intervalSeconds } = c.req.valid("json");
+          if (intervalSeconds !== undefined) {
+            this.setMeterIntervalSeconds(intervalSeconds);
+          }
+          if (auto !== undefined) {
+            this.transactionManager.setAutoMeterValues(auto);
+          }
+          return c.json(this.getMeterState());
+        },
+      );
+      // One MeterValues now for the transaction on a connector: the periodic
+      // timer's tick on demand, with the register as it stands.
+      adminApi.post(
+        "/meter-tick",
+        zValidator(
+          "json",
+          z.object({ connectorId: z.number().int().positive().default(1) }),
+        ),
+        (c) => {
+          const { connectorId } = c.req.valid("json");
+          if (!this.transactionManager.tick(connectorId)) {
+            return c.json(
+              { error: `connector ${connectorId} has no transaction` },
+              409,
+            );
+          }
+          return c.json({ ok: true, connectorId });
+        },
+      );
       adminApi.post(
         "/execute",
         zValidator(
@@ -80,6 +492,193 @@ export class VCP {
           return c.text("OK");
         },
       );
+      // Send an OCPP call and wait for the CSMS's reply to that exact
+      // messageId. Returns {messageId, status: "result"|"error"|"timeout", ...}.
+      adminApi.post(
+        "/execute-sync",
+        zValidator(
+          "json",
+          z.object({
+            action: z.string(),
+            payload: z.any(),
+            timeoutMs: z.number().int().positive().max(120_000).optional(),
+          }),
+        ),
+        async (c) => {
+          const { action, payload, timeoutMs = 15_000 } = c.req.valid("json");
+          const ocppCall = call(action, payload);
+          const outcome = new Promise<CallOutcome>((resolve) => {
+            this.callWaiters.set(ocppCall.messageId, resolve);
+          });
+          try {
+            this.send(ocppCall);
+          } catch (err) {
+            this.callWaiters.delete(ocppCall.messageId);
+            return c.json(
+              {
+                messageId: ocppCall.messageId,
+                status: "not_sent",
+                error: String(err),
+              },
+              503,
+            );
+          }
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const timedOut = new Promise<CallOutcome>((resolve) => {
+            timer = setTimeout(() => resolve({ status: "timeout" }), timeoutMs);
+          });
+          const result = await Promise.race([outcome, timedOut]);
+          clearTimeout(timer);
+          if (result.status === "timeout") {
+            this.callWaiters.delete(ocppCall.messageId);
+            if (action === "StartTransaction")
+              this.abandonedStarts.add(ocppCall.messageId);
+          }
+          return c.json({ messageId: ocppCall.messageId, ...result });
+        },
+      );
+      adminApi.get("/transactions", (c) => {
+        const transactions = Array.from(
+          this.transactionManager.transactions.values(),
+        ).map(({ meterValuesTimer, meterValuesCallback, ...transaction }) => ({
+          ...transaction,
+          meterWh: this.transactionManager.getMeterValue(
+            transaction.transactionId,
+          ),
+        }));
+        return c.json(transactions);
+      });
+      // RemoteStartTransaction fault injection.
+      adminApi.get("/fail-mode", (c) => c.json(this.getRemoteStartFailState()));
+      adminApi.post(
+        "/fail-mode",
+        zValidator(
+          "json",
+          z.object({
+            mode: z.enum(["off", "ignore", "reject", "accept_no_start"]),
+            durationMs: z.number().optional(),
+          }),
+        ),
+        (c) => {
+          const { mode, durationMs } = c.req.valid("json");
+          this.setRemoteStartFailMode(mode, durationMs);
+          return c.json(this.getRemoteStartFailState());
+        },
+      );
+      // Connector fault injection (faulted / high temperature).
+      adminApi.get("/fault", (c) => c.json(this.getConnectorFaultState()));
+      adminApi.post(
+        "/fault",
+        zValidator(
+          "json",
+          z.object({
+            connectorId: z.number().int().optional(),
+            type: z.enum(["faulted", "high_temperature"]),
+            on: z.boolean(),
+          }),
+        ),
+        (c) => {
+          const { connectorId, type, on } = c.req.valid("json");
+          this.setConnectorFault(connectorId ?? 1, type, on);
+          return c.json(this.getConnectorFaultState());
+        },
+      );
+      // Charging speed (kW) + MeterValues report cadence (intervalMs).
+      // kw=null restores the legacy fixed rate; intervalMs=null (or absent)
+      // restores the default 15 s cadence.
+      adminApi.get("/charging-power", (c) =>
+        c.json(this.getChargingPowerState()),
+      );
+      adminApi.post(
+        "/charging-power",
+        zValidator(
+          "json",
+          z.object({
+            kw: z.number().nullable(),
+            intervalMs: z.number().positive().nullable().optional(),
+          }),
+        ),
+        (c) => {
+          const { kw, intervalMs } = c.req.valid("json");
+          this.setChargingPowerKw(kw);
+          this.transactionManager.setMeterIntervalMs(intervalMs ?? null);
+          return c.json(this.getChargingPowerState());
+        },
+      );
+      // Auto-stop energy target. kwh=null disarms. Optional kw/intervalMs set
+      // the ramp rate + MeterValues cadence in the same call (so one button can
+      // arm "stop at 1 kWh" AND set the 0.25 kWh / 5 s rate).
+      adminApi.get("/charge-target", (c) =>
+        c.json(this.getChargeTargetState()),
+      );
+      adminApi.post(
+        "/charge-target",
+        zValidator(
+          "json",
+          z.object({
+            kwh: z.number().positive().nullable(),
+            kw: z.number().positive().nullable().optional(),
+            intervalMs: z.number().positive().nullable().optional(),
+          }),
+        ),
+        (c) => {
+          const { kwh, kw, intervalMs } = c.req.valid("json");
+          this.setChargeTargetKwh(kwh);
+          if (kw !== undefined) this.setChargingPowerKw(kw);
+          if (intervalMs !== undefined) {
+            this.transactionManager.setMeterIntervalMs(intervalMs ?? null);
+          }
+          return c.json(this.getChargeTargetState());
+        },
+      );
+      // OCPP endpoint (WS_URL) control. GET reports the current base URL, the
+      // .env baseline, and any persisted override. POST { url } persists a new
+      // per-CP override (or clears it when url is null, reverting to the .env
+      // baseline) and then restarts the process so the fresh boot reconnects to
+      // it -- same supervisor-relaunch mechanism as /restart. Pass the bare host
+      // (ws:// or wss://, no port path); "/<CP_ID>" is appended on connect.
+      adminApi.get("/ws-url", (c) => c.json(this.getWsUrlState()));
+      adminApi.post(
+        "/ws-url",
+        zValidator(
+          "json",
+          z.object({
+            url: z.string().min(1).nullable(),
+          }),
+        ),
+        (c) => {
+          const { url } = c.req.valid("json");
+          const cpId = this.vcpOptions.chargePointId;
+          if (url === null) {
+            clearWsUrlOverride(cpId);
+          } else {
+            const normalized = normalizeWsUrl(url);
+            if (!/^wss?:\/\//i.test(normalized)) {
+              return c.json(
+                { error: "url must start with ws:// or wss://" },
+                400,
+              );
+            }
+            writeWsUrlOverride(cpId, normalized);
+          }
+          logger.info(
+            "WS_URL change requested via admin API -- exiting for supervisor relaunch",
+          );
+          setTimeout(() => process.exit(0), 250);
+          return c.json({ ...this.getWsUrlState(), restarting: true });
+        },
+      );
+      // Full process restart. Exits the process so the shell supervisor
+      // (run_simulators.sh / run_one_sim.sh, both a `while true` loop) relaunches
+      // it -- a fresh process that reloads .env (WS_URL etc.) and code. The HTTP
+      // reply is flushed first, then the process exits on a short delay.
+      adminApi.post("/restart", (c) => {
+        logger.info(
+          "Restart requested via admin API -- exiting for supervisor relaunch",
+        );
+        setTimeout(() => process.exit(0), 250);
+        return c.json({ ok: true, restarting: true });
+      });
       this.adminServer = serve({
         fetch: adminApi.fetch,
         port: vcpOptions.adminPort,
@@ -145,12 +744,23 @@ export class VCP {
       resolvedCall.payload,
     ]);
     logger.info(`Sending message ➡️  ${jsonMessage}`);
+    this.recordFrame("out", jsonMessage);
     validateOcppOutgoingRequest(
       this.vcpOptions.ocppVersion,
       resolvedCall.action,
       JSON.parse(JSON.stringify(resolvedCall.payload)),
     );
     this.ws.send(jsonMessage);
+    // A real charger stops metering the moment it ends a session, whether or
+    // not the CSMS ever acks the StopTransaction. Waiting for the .conf (the
+    // resHandler) left transactions metering forever when staging stopped
+    // replying -- 3-day "sessions" flooding MeterValues (2026-09-28).
+    if (
+      ocppCall.action === "StopTransaction" &&
+      ocppCall.payload?.transactionId != null
+    ) {
+      this.transactionManager.stopTransaction(ocppCall.payload.transactionId);
+    }
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: ocpp types
@@ -159,13 +769,38 @@ export class VCP {
       throw new Error("Websocket not initialized. Call connect() first");
     }
     const jsonMessage = JSON.stringify([3, result.messageId, result.payload]);
-    logger.info(`Responding with ➡️  ${jsonMessage}`);
     validateOcppIncomingResponse(
       this.vcpOptions.ocppVersion,
       result.action,
       JSON.parse(JSON.stringify(result.payload)),
     );
-    this.ws.send(jsonMessage);
+    this.afterReplyDelay(result.messageId, () => {
+      logger.info(`Responding with ➡️  ${jsonMessage}`);
+      this.recordFrame("out", jsonMessage);
+      this.ws?.send(jsonMessage);
+    });
+  }
+
+  // Runs the answer now, or after replyDelayMs when one is set. The socket
+  // check stays inside the callback: a socket that dropped during the hold
+  // has nothing to answer on, and a Reset that closed it is not an error.
+  private afterReplyDelay(messageId: string, send: () => void): void {
+    if (this.replyDelayMs <= 0) {
+      send();
+      return;
+    }
+    logger.info(
+      `Holding the answer to ${messageId} for ${this.replyDelayMs} ms`,
+    );
+    setTimeout(() => {
+      if (this.ws?.readyState !== WebSocket.OPEN) {
+        logger.warn(
+          `Dropping the held answer to ${messageId}: the socket is gone`,
+        );
+        return;
+      }
+      send();
+    }, this.replyDelayMs);
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: ocpp types
@@ -180,8 +815,11 @@ export class VCP {
       error.errorDescription,
       error.errorDetails,
     ]);
-    logger.info(`Responding with ➡️  ${jsonMessage}`);
-    this.ws.send(jsonMessage);
+    this.afterReplyDelay(error.messageId, () => {
+      logger.info(`Responding with ➡️  ${jsonMessage}`);
+      this.recordFrame("out", jsonMessage);
+      this.ws?.send(jsonMessage);
+    });
   }
 
   configureHeartbeat(interval: number) {
@@ -264,6 +902,7 @@ export class VCP {
 
   private _onMessage(message: string) {
     logger.info(`Receive message ⬅️  ${message}`);
+    this.recordFrame("in", String(message));
     // biome-ignore lint/suspicious/noExplicitAny: ocpp message format
     let data: any[];
     try {
@@ -292,6 +931,13 @@ export class VCP {
           `Received CallResult for unknown messageId=${messageId}`,
         );
       }
+      this.lastReply = {
+        kind: "result",
+        action: enqueuedCall.action,
+        messageId,
+        at: new Date().toISOString(),
+        payload,
+      };
       validateOcppOutgoingResponse(
         this.vcpOptions.ocppVersion,
         enqueuedCall.action,
@@ -302,14 +948,60 @@ export class VCP {
         payload,
         action: enqueuedCall.action,
       });
+      this.callWaiters.get(messageId)?.({ status: "result", payload });
+      this.callWaiters.delete(messageId);
+      if (
+        this.abandonedStarts.delete(messageId) &&
+        payload?.transactionId != null
+      ) {
+        logger.warn(
+          `Late StartTransaction.conf (transactionId=${payload.transactionId}) after the caller timed out -- stopping it`,
+        );
+        this.send(
+          call("StopTransaction", {
+            transactionId: payload.transactionId,
+            meterStop: 0,
+            timestamp: new Date().toISOString(),
+            reason: "Other",
+          }),
+        );
+        this.send(
+          call("StatusNotification", {
+            connectorId: enqueuedCall.payload.connectorId,
+            errorCode: "NoError",
+            status: "Available",
+          }),
+        );
+      }
     } else if (type === 4) {
       const [messageId, errorCode, errorDescription, errorDetails] = rest;
+      // Cosmos answers an internal failure (Spark 401, a thrown handler) with
+      // a CALLERROR carrying a fresh uuid rather than the id of the call that
+      // failed, so this is often not in the outbox. It is still the last
+      // thing the CSMS said, which is what a panel wants to see.
+      const failedCall = ocppOutbox.get(messageId);
+      this.lastReply = {
+        kind: "error",
+        action: failedCall?.action ?? null,
+        messageId,
+        at: new Date().toISOString(),
+        errorCode,
+        errorDescription,
+        errorDetails,
+      };
       this.messageHandler.handleCallError(this, {
         messageId,
         errorCode,
         errorDescription,
         errorDetails,
       });
+      this.callWaiters.get(messageId)?.({
+        status: "error",
+        errorCode,
+        errorDescription,
+      });
+      this.callWaiters.delete(messageId);
+      this.abandonedStarts.delete(messageId);
     } else {
       throw new Error(`Unrecognized message type ${type}`);
     }

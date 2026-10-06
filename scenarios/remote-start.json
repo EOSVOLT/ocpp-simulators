@@ -1,0 +1,39 @@
+{
+  "name": "remote-start",
+  "description": "The session Spark starts. The charger boots, reports Available, then Preparing because the driver has plugged the cable in (Spark refuses to prepare a session on an unplugged connector), and waits for a RemoteStartTransaction from the app or panel; the VCP answers Accepted and starts the transaction itself, exactly as a real one does. It then charges until Spark sends RemoteStopTransaction. Run it, then start and later stop the session in Spark.",
+  "steps": [
+    {
+      "step": "boot"
+    },
+    {
+      "step": "expect",
+      "lastReply": {
+        "status": "Accepted"
+      }
+    },
+    {
+      "step": "status",
+      "connectorId": 1,
+      "status": "Available"
+    },
+    {
+      "step": "status",
+      "connectorId": 1,
+      "status": "Preparing"
+    },
+    {
+      "step": "waitForCommand",
+      "action": "RemoteStartTransaction",
+      "timeoutSeconds": 300
+    },
+    {
+      "step": "waitForCommand",
+      "action": "RemoteStopTransaction",
+      "timeoutSeconds": 300
+    },
+    {
+      "step": "wait",
+      "seconds": 5
+    }
+  ]
+}

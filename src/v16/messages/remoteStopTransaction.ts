@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { generateOCMF, getOCMFPublicKey } from "../../ocmfGenerator";
 import { type OcppCall, OcppIncoming } from "../../ocppMessage";
+import { delay } from "../../utils";
 import type { VCP } from "../../vcp";
 import { statusNotificationOcppMessage } from "./statusNotification";
 import { stopTransactionOcppMessage } from "./stopTransaction";
@@ -30,6 +31,14 @@ class RemoteStopTransactionOcppMessage extends OcppIncoming<
       return;
     }
     vcp.respond(this.response(call, { status: "Accepted" }));
+    // Same two clocks as RemoteStartTransaction: the stop follows the answer
+    // by actDelayMs, with the register as it stands at that moment.
+    await delay(vcp.actDelayMs);
+    if (!vcp.transactionManager.transactions.has(transactionId)) {
+      // Stopped by something else (an auto-stop target, a local stop) while
+      // we waited: nothing left to stop.
+      return;
+    }
 
     const ocmf = generateOCMF({
       startTime: transaction.startedAt,

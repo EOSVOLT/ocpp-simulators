@@ -6,6 +6,7 @@ import {
 } from "../../ocppMessage";
 import { resolveTokenPlaceholder } from "../../tokenPlaceholder";
 import type { VCP } from "../../vcp";
+import { sampledValues } from "../meterSamples";
 import { ConnectorIdSchema, IdTagInfoSchema, IdTokenSchema } from "./_common";
 import { meterValuesOcppMessage } from "./meterValues";
 import { statusNotificationOcppMessage } from "./statusNotification";
@@ -47,6 +48,37 @@ class StartTransactionOcppMessage extends OcppOutgoing<
       idTag: call.payload.idTag,
       connectorId: call.payload.connectorId,
       meterValuesCallback: async (transactionState) => {
+        // Auto-stop at the armed energy target: the instant the register meets
+        // the target, stop the session with meterStop forced to the EXACT
+        // target (no overshoot -- e.g. lands on 1.000 kWh, never 1.05). Works
+        // for app-initiated (RemoteStart) sessions too. Skip the normal (over-
+        // target) MeterValues report on this tick.
+        if (
+          vcp.chargeTargetWh != null &&
+          transactionState.meterValue >= vcp.chargeTargetWh
+        ) {
+          const meterStop = vcp.chargeTargetWh;
+          vcp.send(
+            stopTransactionOcppMessage.request({
+              transactionId: result.payload.transactionId,
+              meterStop,
+              reason: "Local",
+              timestamp: new Date().toISOString(),
+            }),
+          );
+          vcp.send(
+            statusNotificationOcppMessage.request({
+              connectorId: call.payload.connectorId,
+              errorCode: "NoError",
+              status: "Available",
+            }),
+          );
+          // Clear local state + stop the meter timer NOW (don't wait for the
+          // StopTransaction.conf) so no further tick fires a duplicate stop.
+          // The target is sticky and stays armed for the next session.
+          vcp.transactionManager.stopTransaction(result.payload.transactionId);
+          return;
+        }
         vcp.send(
           meterValuesOcppMessage.request({
             connectorId: call.payload.connectorId,
@@ -54,13 +86,7 @@ class StartTransactionOcppMessage extends OcppOutgoing<
             meterValue: [
               {
                 timestamp: new Date().toISOString(),
-                sampledValue: [
-                  {
-                    value: (transactionState.meterValue / 1000).toString(),
-                    measurand: "Energy.Active.Import.Register",
-                    unit: "kWh",
-                  },
-                ],
+                sampledValue: sampledValues(vcp, transactionState.meterValue),
               },
             ],
           }),

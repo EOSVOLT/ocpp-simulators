@@ -1,0 +1,80 @@
+{
+  "name": "session",
+  "description": "A full charging session driven from the charger: plug in, authorise, start, meter for a minute, stop, unplug. The reply to StartTransaction is the transaction id every later message quotes; transactionId 0 means Spark refused (no charger row, or no ACCEPTED session) and the run fails at the expect step.",
+  "steps": [
+    {
+      "step": "boot"
+    },
+    {
+      "step": "expect",
+      "lastReply": {
+        "status": "Accepted"
+      }
+    },
+    {
+      "step": "status",
+      "connectorId": 1,
+      "status": "Available"
+    },
+    {
+      "step": "status",
+      "connectorId": 1,
+      "status": "Preparing"
+    },
+    {
+      "step": "authorize",
+      "idTag": "SIMTAG01"
+    },
+    {
+      "step": "expect",
+      "lastReply": {
+        "idTagInfo": {
+          "status": "Accepted"
+        }
+      }
+    },
+    {
+      "step": "startTransaction",
+      "connectorId": 1,
+      "idTag": "SIMTAG01"
+    },
+    {
+      "step": "expect",
+      "lastReply": {
+        "idTagInfo": {
+          "status": "Accepted"
+        }
+      }
+    },
+    {
+      "step": "expectTransactionId",
+      "allocated": true
+    },
+    {
+      "step": "status",
+      "connectorId": 1,
+      "status": "Charging"
+    },
+    {
+      "step": "meterValues",
+      "seconds": 60,
+      "intervalSeconds": 10,
+      "powerW": 11000,
+      "socStart": 20
+    },
+    {
+      "step": "stopTransaction",
+      "reason": "Local"
+    },
+    {
+      "step": "status",
+      "connectorId": 1,
+      "status": "Finishing"
+    },
+    {
+      "step": "status",
+      "connectorId": 1,
+      "status": "Available"
+    }
+  ]
+}

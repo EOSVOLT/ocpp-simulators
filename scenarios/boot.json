@@ -1,0 +1,32 @@
+{
+  "name": "boot",
+  "description": "A charger comes online: BootNotification, both the charge point and connector 1 reported, one heartbeat. The shortest proof that Cosmos accepts this charge box and that Spark sees it. Run against a VCP that is already connected (connect/disconnect are the VCP process's own business).",
+  "steps": [
+    {
+      "step": "boot"
+    },
+    {
+      "step": "expect",
+      "lastReply": {
+        "status": "Accepted"
+      }
+    },
+    {
+      "step": "status",
+      "connectorId": 0,
+      "status": "Available"
+    },
+    {
+      "step": "status",
+      "connectorId": 1,
+      "status": "Available"
+    },
+    {
+      "step": "heartbeat"
+    },
+    {
+      "step": "wait",
+      "seconds": 1
+    }
+  ]
+}

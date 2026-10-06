@@ -1,0 +1,64 @@
+{
+  "name": "fleet",
+  "description": "The load shape the ingest budget is written against: boot, plug in, charge for two minutes sampling every 10 seconds, stop. One VCP per station: run it against each admin port of a run_simulators.sh fleet. Round-trip percentiles are not measured here.",
+  "steps": [
+    {
+      "step": "boot"
+    },
+    {
+      "step": "expect",
+      "lastReply": {
+        "status": "Accepted"
+      }
+    },
+    {
+      "step": "status",
+      "connectorId": 1,
+      "status": "Available"
+    },
+    {
+      "step": "status",
+      "connectorId": 1,
+      "status": "Preparing"
+    },
+    {
+      "step": "authorize",
+      "idTag": "FLEETTAG"
+    },
+    {
+      "step": "startTransaction",
+      "connectorId": 1,
+      "idTag": "FLEETTAG"
+    },
+    {
+      "step": "expectTransactionId",
+      "allocated": true
+    },
+    {
+      "step": "status",
+      "connectorId": 1,
+      "status": "Charging"
+    },
+    {
+      "step": "meterValues",
+      "seconds": 120,
+      "intervalSeconds": 10,
+      "powerW": 11000,
+      "socStart": 20
+    },
+    {
+      "step": "stopTransaction",
+      "reason": "Local"
+    },
+    {
+      "step": "status",
+      "connectorId": 1,
+      "status": "Finishing"
+    },
+    {
+      "step": "status",
+      "connectorId": 1,
+      "status": "Available"
+    }
+  ]
+}

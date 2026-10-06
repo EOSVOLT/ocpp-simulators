@@ -1,35 +1,21 @@
-# Stage 1: Build stage with all dependencies
-FROM node:20-alpine AS builder
+# The simulator fleet image: the web control panel plus the stations it manages, in one container.
+# Published as eosvoltaps/ocpp-simulators by .github/workflows/build_image.yml; Spark's dev stack
+# runs it behind its `simulator` compose profile. docker/entrypoint.sh sets the profile and log
+# directories, optionally pre-creates stations from OCPP_SIM_STATIONS, and starts the panel, which
+# spawns and supervises every station process (see README, "Web panel").
+#
+# Dockerfile.vcp is upstream's image for one headless station driven by its admin API.
+FROM node:22-alpine
 WORKDIR /app
+RUN apk add --no-cache bash
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --no-audit --no-fund
 COPY . .
-
-# Stage 2: Production runner
-FROM node:20-alpine AS runner
-WORKDIR /app
-
-# Create non-root user
-RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 vcp
-USER vcp
-
-# Copy node_modules from builder stage (includes tsx for runtime)
-COPY --from=builder --chown=vcp:nodejs /app/node_modules ./node_modules
-
-# Copy source files from builder stage
-COPY --from=builder --chown=vcp:nodejs /app/src ./src
-COPY --from=builder --chown=vcp:nodejs /app/index_16.ts ./
-COPY --from=builder --chown=vcp:nodejs /app/index_201.ts ./
-COPY --from=builder --chown=vcp:nodejs /app/index_21.ts ./
-COPY --from=builder --chown=vcp:nodejs /app/package.json ./
-
-# Environment variables
-ENV ENTRY_POINT=index_16.ts
-ENV ADMIN_PORT=9999
-
-# Expose admin API port
-EXPOSE 9999
-
-# Run the application
-CMD ["sh", "-c", "npx tsx ${ENTRY_POINT}"]
+RUN mkdir -p logs profiles && chmod +x docker/entrypoint.sh
+ENV SIM_PROFILES_DIR=/app/profiles \
+    SIM_LOG_DIR=/app/logs \
+    WEB_HOST=0.0.0.0 \
+    WEB_PORT=8080 \
+    WS_URL=ws://localhost:9000
+EXPOSE 8080
+CMD ["/app/docker/entrypoint.sh"]

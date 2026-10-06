@@ -1,6 +1,9 @@
 # Logs
 logs
 *.log
+
+# Real private charging keys used by the web UI's transaction simulator
+charging_keys.txt
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -129,6 +132,9 @@ dist
 
 .vscode
 .history
+
+# Per-CP OCPP URL overrides written at runtime via the /ws-url admin endpoint
+ws-url-overrides.json
 
 # Claude Code
 CLAUDE.md
