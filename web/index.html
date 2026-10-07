@@ -251,14 +251,42 @@ details[open].drawer summary::after{content:"▾"}
 .hd .note{font-size:11px}
 .empty-st{padding:60px 16px;text-align:center;color:var(--faint)}
 .formerr{color:var(--bad);font-size:12px}
+/* compact status strip: identity + facts shrink, the buttons keep their line */
+.strip{flex-wrap:wrap;gap:8px 16px}
+.strip .ident{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:3px}
+.strip .ident .facts{font-size:12px;gap:2px 12px}
+.strip .ident .facts .url{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+.strip .acts{flex:none;flex-wrap:nowrap}
+@media (max-width:640px){.strip .ident{flex-basis:100%}.strip .acts{flex-wrap:wrap}}
+/* collapsible sidebar */
+.side .brand .tog{margin-left:auto;padding:4px 5px}
+.side .brand .tog svg{transition:transform .15s}
+.ab{display:none}
+.app.collapsed .side .brand .tog svg{transform:rotate(180deg)}
+@media (min-width:1101px){
+  .app{transition:grid-template-columns .15s}
+  .app.collapsed{grid-template-columns:56px minmax(0,1fr)}
+  .app.collapsed .side{padding:12px 6px;align-items:stretch}
+  .app.collapsed .side .brand{justify-content:center}
+  .app.collapsed .side .brand .tog{margin:0}
+  .app.collapsed .side .brand b,.app.collapsed .side .brand .pill,.app.collapsed .side .eyebrow,
+  .app.collapsed .nav a .id,.app.collapsed .nav a .cs,.app.collapsed .side .foot,
+  .app.collapsed #addForm,.app.collapsed #stEmpty,.app.collapsed .addbtn .full{display:none}
+  .app.collapsed .ab{display:block}
+  .app.collapsed .nav a{flex-direction:column;gap:3px;padding:6px 2px;justify-content:center;text-align:center}
+  .app.collapsed .nav a .ab{font:500 10px var(--mono)}
+  .app.collapsed .addbtn{text-align:center;padding:6px 0}
+}
+@media (max-width:1100px){.app.collapsed .side > :not(.brand){display:none}.side .brand .tog svg{transform:rotate(90deg)}.app.collapsed .side .brand .tog svg{transform:rotate(-90deg)}}
 </style>
 </head>
 <body>
 <div class="app">
 <aside class="side">
-  <div class="brand"><b>OCPP Simulator Control</b><span class="pill" id="pillAll">loading…</span></div>
+  <div class="brand"><b>OCPP Simulator Control</b><span class="pill" id="pillAll">loading…</span>
+    <button class="ghost icon tog" id="bSide" title="Collapse sidebar" aria-label="Collapse sidebar" aria-expanded="true"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button></div>
   <nav class="nav">
-    <a id="navOv"><span class="id">Overview</span><span class="cs" id="ovCount"></span></a>
+    <a id="navOv" title="Overview"><span class="ab">All</span><span class="id">Overview</span><span class="cs" id="ovCount"></span></a>
   </nav>
   <div>
     <div class="eyebrow" style="margin-bottom:6px">Stations</div>
@@ -266,7 +294,7 @@ details[open].drawer summary::after{content:"▾"}
     <div class="note" id="stEmpty" hidden>No stations yet.</div>
   </div>
   <div>
-    <button class="addbtn" id="bAddToggle">+ Add station</button>
+    <button class="addbtn" id="bAddToggle" title="Add station"><span class="ab">+</span><span class="full">+ Add station</span></button>
     <form class="addform" id="addForm" hidden style="margin-top:8px">
       <label>Station id<input id="aId" placeholder="SIM-0004" class="mono" autocomplete="off" required></label>
       <label>Connectors<input id="aConn" type="number" min="1" max="20" value="1"></label>
@@ -305,19 +333,20 @@ details[open].drawer summary::after{content:"▾"}
 
 <div id="viewSt" hidden>
 <header class="strip">
-  <h1><span class="dot" id="dot"></span><span id="hName"></span><span class="pill bad" id="pillOff" hidden>Offline</span></h1>
-  <div class="facts">
-    <span><b id="fUrl" class="mono"></b></span>
-    <span><span id="fUpL">connected</span> <b id="fUp" class="num">–</b></span>
-    <span>last heartbeat <b id="fHb" class="num">never</b></span>
-    <span>process <b id="fPid"></b> · admin <b id="fPort"></b> · <b id="fSim"></b></span>
-    <span>pending calls <b id="fPend" class="num">0</b></span>
+  <div class="ident">
+    <h1><span class="dot" id="dot"></span><span id="hName"></span><span class="pill bad" id="pillOff" hidden>Offline</span></h1>
+    <div class="facts">
+      <span class="url mono" id="fUrl"></span>
+      <span title="How long the OCPP socket has been open"><span id="fUpL">up</span> <b id="fUp" class="num">–</b></span>
+      <span title="When the CSMS last answered a Heartbeat or BootNotification">heartbeat <b id="fHb" class="num">never</b></span>
+      <span title="Process · admin port · profile"><b id="fPid"></b> · <b id="fPort"></b> · <b id="fSim"></b></span>
+      <span title="Station calls still waiting for the CSMS"><b id="fPend" class="num">0</b> pending</span>
+    </div>
   </div>
-  <div class="spacer"></div>
-  <div class="row">
+  <div class="row acts">
     <button id="bOffline" class="danger">Go offline</button>
     <button id="bReconnect">Reconnect</button>
-    <button id="bRestart">Restart process</button>
+    <button id="bRestart" title="Restart the station process: reloads its profile and code, drops a running session">Restart</button>
     <span id="rmWrap"></span>
   </div>
   <div class="chips" id="chips"></div>
@@ -434,6 +463,7 @@ const pad=n=>String(n).padStart(2,"0");
 const hms=d=>`${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3,"0")}`;
 const esc=v=>String(v??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const fmtDur=ms=>{const s=Math.max(0,Math.floor(ms/1000));const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h?`${h}h ${pad(m)}m`:`${m}:${pad(s%60)}`;};
+const fmtAgo=ms=>{const s=Math.max(0,Math.round(ms/1000));if(s<60)return`${s}s ago`;const m=Math.floor(s/60);if(m<60)return`${m}m ago`;return`${Math.floor(m/60)}h ${pad(m%60)}m ago`;};
 const kwLabel=w=>(w/1000).toFixed(1);
 
 // ------- state -------
@@ -484,8 +514,8 @@ function renderSide(){
   $("#ovCount").textContent=order.length||"";$("#navOv").classList.toggle("sel",selected==="overview");
   const l=$("#stList");l.innerHTML="";$("#stEmpty").hidden=order.length>0;
   order.forEach(id=>{const x=sims[id];const a=document.createElement("a");a.className=id===selected?"sel":"";
-    a.innerHTML=`<span class="dot ${x.connected?"":"off"}"></span><span class="id">${esc(x.cpId)}</span><span class="cs">${esc(connSummary(x))}</span>`;
-    a.title=`${x.id} · admin :${x.adminPort}`;a.onclick=()=>select(id);l.append(a);});
+    a.innerHTML=`<span class="dot ${x.connected?"":"off"}"></span><span class="ab">${esc(x.cpId.slice(-4))}</span><span class="id">${esc(x.cpId)}</span><span class="cs">${esc(connSummary(x))}</span>`;
+    a.title=`${x.cpId} · ${connSummary(x)} · ${x.id} · admin :${x.adminPort}`;a.onclick=()=>select(id);l.append(a);});
   if(defaults)$("#dirs").innerHTML=`profiles: ${esc(defaults.profilesDir)}<br>logs: ${esc(defaults.logDir)}`;
 }
 
@@ -586,7 +616,7 @@ function buildCard(s,c){
     ${test?`<div class="stack" style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
       <div class="field"><label>Charger power${multi?'<span class="note">station-wide</span>':""}</label><div class="ctl"><div class="seg" data-r="speed">${SPEEDS.map(([v,l])=>`<button data-v="${v}">${l}</button>`).join("")}</div></div></div>
       <div class="field"><label>Stop after <span class="note">kWh, blank = never${multi?", station-wide":""}</span></label><div class="ctl"><input type="number" step="0.25" min="0" placeholder="kWh" style="width:90px" data-r="auto"></div></div>
-      <div class="field"><label>Simulate state of charge <span class="note">SoC in MeterValues, car stops at 100% and reports SuspendedEV</span></label>
+      <div class="field"><label>Simulate state of charge <span class="note">SoC in MeterValues, stops at 100%</span></label>
         <div class="ctl">
           <span class="socf" data-r="socF" hidden><input type="number" min="1" max="1000" step="1" style="width:70px" data-r="socCap" value="60"><span class="note">kWh battery</span>
           <input type="number" min="0" max="100" step="1" style="width:64px" data-r="socStart" value="20"><span class="note">% at start</span></span>
@@ -888,8 +918,18 @@ if(window.ResizeObserver)new ResizeObserver(setStripH).observe(strip);
 
 // ------- add station -------
 const showAddErr=m=>{const e=$("#addErr");e.textContent=m||"";e.hidden=!m;};
-$("#bAddToggle").onclick=()=>{const f=$("#addForm");f.hidden=!f.hidden;if(!f.hidden)$("#aId").focus();};
-$("#bOvAdd").onclick=()=>{$("#addForm").hidden=false;$("#aId").focus();};
+const SIDE_KEY="ocpp-panel-side-collapsed";
+function setSide(collapsed){
+  document.querySelector(".app").classList.toggle("collapsed",collapsed);
+  const b=$("#bSide");const t=collapsed?"Expand sidebar":"Collapse sidebar";b.title=t;b.setAttribute("aria-label",t);b.setAttribute("aria-expanded",String(!collapsed));
+  try{localStorage.setItem(SIDE_KEY,collapsed?"1":"");}catch{}
+}
+try{setSide(localStorage.getItem(SIDE_KEY)==="1");}catch{}
+$("#bSide").onclick=()=>setSide(!document.querySelector(".app").classList.contains("collapsed"));
+$("#bAddToggle").onclick=()=>{const f=$("#addForm");
+  if(document.querySelector(".app").classList.contains("collapsed")){setSide(false);f.hidden=false;}else f.hidden=!f.hidden;
+  if(!f.hidden)$("#aId").focus();};
+$("#bOvAdd").onclick=()=>{setSide(false);$("#addForm").hidden=false;$("#aId").focus();};
 $("#bAddCancel").onclick=()=>{$("#addForm").hidden=true;showAddErr("");};
 $("#addForm").onsubmit=async e=>{e.preventDefault();
   const cpId=$("#aId").value.trim();if(!cpId)return showAddErr("Enter a station id");
@@ -914,9 +954,9 @@ function renderAll(){
 function tick(){
   const s=cur();if(!s||selected==="overview")return;
   const since=s.connectedSince?Date.parse(s.connectedSince):null;
-  $("#fUpL").textContent=s.connected?"connected":"offline";
+  $("#fUpL").textContent=s.connected?"up":"offline";
   $("#fUp").textContent=s.connected&&since?fmtDur(Date.now()-since):"–";$("#fUp").classList.toggle("off",!s.connected);
-  $("#fHb").textContent=s.lastHeartbeatAt?`${Math.round((Date.now()-Date.parse(s.lastHeartbeatAt))/1000)} s ago`:"never";
+  $("#fHb").textContent=s.lastHeartbeatAt?fmtAgo(Date.now()-Date.parse(s.lastHeartbeatAt)):"never";
 }
 async function refreshSims(){
   try{
