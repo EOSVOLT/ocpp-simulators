@@ -1,0 +1,946 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>OCPP Simulator Control</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: status strip on top; left column = the connector as a state machine + canned scenarios;
+   right column = one filterable timeline with a raw-send REPL. Settings live in a collapsed drawer. */
+:root{
+  --bg:#0f1317; --panel:#161c22; --panel-2:#1c242c; --line:#28323c; --line-strong:#36434f;
+  --fg:#e6ebf0; --muted:#8a98a6; --faint:#5d6b79;
+  --accent:#3fb7c9; --accent-ink:#06252a;
+  --good:#4fc47a; --warn:#e0a53a; --bad:#e2655a; --info:#7aa2f7;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){ :root:not([data-theme="dark"]){
+  --bg:#f3f5f7; --panel:#ffffff; --panel-2:#eef2f5; --line:#d8dee5; --line-strong:#c2cbd4;
+  --fg:#15202b; --muted:#5b6b7b; --faint:#8a98a6;
+  --accent:#1a8d9e; --accent-ink:#ffffff;
+  --good:#1f9a52; --warn:#b47a12; --bad:#c7453a; --info:#3b6fd8; color-scheme:light; } }
+:root[data-theme="light"]{
+  --bg:#f3f5f7; --panel:#ffffff; --panel-2:#eef2f5; --line:#d8dee5; --line-strong:#c2cbd4;
+  --fg:#15202b; --muted:#5b6b7b; --faint:#8a98a6;
+  --accent:#1a8d9e; --accent-ink:#ffffff;
+  --good:#1f9a52; --warn:#b47a12; --bad:#c7453a; --info:#3b6fd8; color-scheme:light; }
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 var(--sans);margin:0;padding:0}
+.app{display:grid;grid-template-columns:250px minmax(0,1fr);min-height:100vh}
+@media (max-width:1100px){.app{grid-template-columns:1fr}}
+.side{border-right:1px solid var(--line);background:var(--panel);padding:14px 14px 20px;display:flex;flex-direction:column;gap:14px;position:sticky;top:env(safe-area-inset-top,0px);height:100vh;overflow:auto}
+@media (max-width:1100px){.side{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}}
+.side .brand{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.side .brand b{font-size:15px;font-weight:600}
+.pill{font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px;border:1px solid var(--line-strong);color:var(--muted)}
+.pill.good{color:var(--good);border-color:var(--good)} .pill.bad{color:var(--bad);border-color:var(--bad)} .pill.warn{color:var(--warn);border-color:var(--warn)}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav a{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;color:var(--fg);text-decoration:none;cursor:pointer}
+.nav a:hover{background:var(--panel-2)} .nav a.sel{background:color-mix(in srgb,var(--accent) 18%,transparent)}
+.nav a .id{flex:1;font-weight:500} .nav a .cs{font-size:11px;color:var(--muted)}
+.nav a .dot{width:7px;height:7px;box-shadow:none}
+.side .addbtn{width:100%;text-align:left}
+.addform{display:flex;flex-direction:column;gap:8px;background:var(--panel-2);border-radius:8px;padding:10px}
+.addform label{font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:3px}
+.addform input{width:100%}
+.side .foot{margin-top:auto;font-size:11px;color:var(--faint);font-family:var(--mono)}
+.content{padding-block:0 16px;padding-inline:16px;min-width:0}
+/* overview */
+.ov{margin-top:16px}
+.ov table{width:100%;border-collapse:collapse;font-size:13px}
+.ov th{text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:10px 12px;border-bottom:1px solid var(--line)}
+.ov td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.ov tr:last-child td{border-bottom:0}
+.ov td .acts{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+.ov td button{padding:4px 9px;font-size:12px}
+.tablewrap{overflow-x:auto}
+.confirm{display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--bad)}
+.ovhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-block:14px}
+.ovhead h2{margin:0;font-size:18px;font-weight:600}
+button,input,select{font:inherit;color:inherit}
+button{background:var(--panel-2);border:1px solid var(--line-strong);border-radius:6px;padding:6px 11px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+button.danger{border-color:var(--bad);color:var(--bad)}
+button.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+button.ghost:hover{color:var(--fg);border-color:var(--line-strong)}
+button:disabled{opacity:.4;cursor:not-allowed}
+input,select{background:var(--bg);border:1px solid var(--line-strong);border-radius:6px;padding:6px 9px}
+.mono{font-family:var(--mono)}
+.num{font-variant-numeric:tabular-nums}
+.eyebrow{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+
+/* status strip */
+.strip{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding-block:12px 10px;margin-inline:-16px;padding-inline:16px;display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}
+.strip h1{font-size:18px;margin:0;font-weight:600;display:flex;align-items:center;gap:10px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--good);box-shadow:0 0 0 3px color-mix(in srgb,var(--good) 25%,transparent)}
+.dot.off{background:var(--bad);box-shadow:0 0 0 3px color-mix(in srgb,var(--bad) 25%,transparent)}
+.facts{display:flex;flex-wrap:wrap;gap:4px 16px;color:var(--muted);font-size:13px}
+.facts b{color:var(--fg);font-weight:500}
+.strip .spacer{flex:1}
+.chips{display:flex;flex-wrap:wrap;gap:6px;width:100%}
+.chips:empty{display:none}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--warn);color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,transparent);border-radius:999px;padding:2px 6px 2px 10px;font-size:12px}
+.chip.bad{border-color:var(--bad);color:var(--bad);background:color-mix(in srgb,var(--bad) 10%,transparent)}
+.chip.info{border-color:var(--info);color:var(--info);background:color-mix(in srgb,var(--info) 10%,transparent)}
+.chip button{border:0;background:transparent;color:inherit;padding:0 4px;line-height:1;font-size:14px}
+.chip button:hover{border:0}
+
+/* columns */
+.cols{display:grid;grid-template-columns:minmax(360px,600px) minmax(0,1fr);gap:16px;margin-top:16px;align-items:start}
+@media (max-width:980px){.cols{grid-template-columns:1fr}}
+.col{display:flex;flex-direction:column;gap:14px;min-width:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px}
+.card > .hd{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line)}
+.card > .hd .eyebrow{flex:1}
+.card > .bd{padding:14px}
+
+/* connector */
+.conn-state{display:flex;align-items:flex-start;gap:14px}
+.conn-state .big{font-size:28px;font-weight:600;line-height:1.1;letter-spacing:-.01em}
+.conn-state .sub{color:var(--muted);font-size:13px;margin-top:4px}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;border:1px solid}
+.st-Available{color:var(--good);border-color:var(--good)}
+.st-Preparing{color:var(--info);border-color:var(--info)}
+.st-Charging{color:var(--accent);border-color:var(--accent)}
+.st-Finishing{color:var(--warn);border-color:var(--warn)}
+.st-Faulted,.st-Unavailable{color:var(--bad);border-color:var(--bad)}
+.meters{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-top:14px}
+.socf{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+.meter{background:var(--panel-2);border-radius:8px;padding:8px 10px}
+.meter .v{font-size:20px;font-weight:600;font-family:var(--mono)}
+.meter .l{font-size:11px;color:var(--muted);margin-top:2px}
+.bar{height:4px;background:var(--line);border-radius:2px;margin-top:8px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent);width:0;transition:width .4s}
+.actions{display:flex;flex-wrap:nowrap;gap:8px;margin-top:14px;align-items:center;overflow-x:auto;padding-bottom:2px}
+.actions>button,.actions>select{flex:0 0 auto;white-space:nowrap}
+.actions>input{flex:1 1 120px;min-width:90px}
+.actions .hint{width:100%;font-size:12px;color:var(--muted)}
+.actions .end{margin-left:auto}
+button.danger{background:color-mix(in srgb,var(--bad) 10%,transparent)}
+button.danger:hover{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 20%,transparent)}
+.field{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px}
+.field > label{flex:0 0 auto}
+.field > label{font-size:12px;color:var(--muted)}
+.row.force{flex-wrap:nowrap}
+.row.force select{flex:1 1 0;min-width:0}
+.row.force button{flex:0 0 auto;white-space:nowrap}
+@media (max-width:520px){.row.force{flex-wrap:wrap}.row.force button{flex:1 1 100%}}
+.field > label .note{display:block;color:var(--faint);font-size:11px}
+.field .ctl{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;flex:1 1 280px;min-width:0}
+.seg{display:inline-flex;border:1px solid var(--line-strong);border-radius:6px;overflow:hidden;flex-wrap:nowrap;white-space:nowrap;max-width:100%;overflow-x:auto}
+.seg button{border:0;border-radius:0;background:transparent;padding:5px 10px;font-size:13px}
+.seg button + button{border-left:1px solid var(--line-strong)}
+.seg button.on{background:var(--accent);color:var(--accent-ink);font-weight:600}
+.seg button:hover{border-color:var(--line-strong)}
+details.more{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+details.more summary{cursor:pointer;color:var(--muted);font-size:13px;list-style:none;display:flex;align-items:center;gap:6px}
+details.more summary::before{content:"▸";font-size:11px}
+details[open].more summary::before{content:"▾"}
+.stack{display:flex;flex-direction:column;gap:10px;margin-top:10px}
+.scen{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.scen button{text-align:left;padding:9px 11px}
+.scen button small{display:block;color:var(--muted);font-weight:400;font-size:11px;margin-top:2px}
+
+/* settings drawer */
+details.drawer summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:10px 14px}
+details.drawer summary::-webkit-details-marker{display:none}
+details.drawer summary .eyebrow{flex:1}
+details.drawer summary .pv{color:var(--muted);font-size:12px}
+details.drawer summary::after{content:"▸";color:var(--muted);font-size:12px}
+details[open].drawer summary::after{content:"▾"}
+.grp{border-top:1px solid var(--line);padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+.grp > .eyebrow,.grphd .eyebrow{color:var(--faint)}
+.grphd{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.grphd .note{margin-left:auto;text-align:right}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.row input[type=text]{flex:1;min-width:160px}
+.note{font-size:12px;color:var(--muted)}
+.toggle{display:inline-flex;align-items:center;gap:8px;font-size:13px}
+.toggle input{appearance:none;-webkit-appearance:none;box-sizing:border-box;width:36px;height:20px;margin:0;padding:0;border:0;border-radius:999px;background:var(--line-strong);position:relative;cursor:pointer;transition:background .15s;flex:0 0 auto;vertical-align:middle}
+.toggle input::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.35);transition:transform .15s}
+.toggle input:checked{background:var(--accent)}
+.toggle input:checked::after{transform:translateX(16px);background:var(--accent-ink)}
+.toggle input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.toggle{cursor:pointer}
+
+/* timeline */
+.tl{display:flex;flex-direction:column;min-height:560px}
+@media (min-width:981px){
+  .strip{position:sticky;top:0;z-index:5}
+  .col.right{position:sticky;top:calc(var(--striph,64px) + 16px);height:calc(100vh - var(--striph,64px) - 32px);min-height:360px}
+  .col.right .tl{flex:1;min-height:0}
+}
+.tl .hd{flex-wrap:wrap;gap:8px}
+.tl .hd .eyebrow{flex:0 0 calc(92px + 10px + 18px + 10px - 8px)}
+@media (max-width:640px){.tl .hd .eyebrow{flex:0 0 100%}}
+.tl .hd .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;flex:1;min-width:0}
+.tl .hd .filters .lead{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.tl .hd .filters .trail{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-left:auto}
+.tl .hd input[type=text]{width:190px;padding:4px 8px;font-size:13px}
+.tl .hd .toggle{font-size:12px;color:var(--muted)}
+.log{flex:1;overflow:auto;min-height:0;font-family:var(--mono);font-size:12.5px}
+.ev{display:grid;grid-template-columns:92px 18px minmax(0,1fr) auto 24px;gap:0 10px;padding:6px 14px;border-bottom:1px solid var(--line);align-items:baseline;cursor:pointer}
+.ev:hover{background:var(--panel-2)}
+.ev .t{color:var(--faint)}
+.ev .d{text-align:center}
+.ev .d.out{color:var(--accent)}
+.ev .d.in{color:var(--info)}
+.ev .d.proc{color:var(--faint)}
+.ev .a{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ev .a .act{font-weight:500}
+.ev .a .sum{color:var(--muted);margin-left:8px}
+.ev .r{font-size:11px;color:var(--muted);white-space:nowrap}
+.ev .r.ok{color:var(--good)} .ev .r.err{color:var(--bad)} .ev .r.wait{color:var(--warn)} .ev .r.queued{color:var(--bad)}
+.facts .off{color:var(--bad)}
+.conns{display:flex;flex-direction:column;gap:14px}
+.badge.offline{color:var(--bad);border-color:var(--bad);background:color-mix(in srgb,var(--bad) 12%,transparent)}
+.ev.proc .a{color:var(--muted)}
+.ev.err{box-shadow:inset 3px 0 0 var(--bad)}
+.ev.open{background:var(--panel-2)}
+.cp{border:0;background:transparent;color:var(--faint);padding:2px;line-height:0;border-radius:4px;cursor:pointer}
+.cp:hover{color:var(--accent);background:var(--panel-2);border:0}
+.icon{padding:5px 7px;line-height:0}
+[data-tip]{position:relative}
+[data-tip]::after{content:attr(data-tip);position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);background:var(--fg);color:var(--bg);font:12px/1.2 var(--sans);padding:4px 8px;border-radius:5px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .12s;z-index:20}
+[data-tip]:hover::after,[data-tip]:focus-visible::after{opacity:1;transition-delay:.25s}
+.cp[data-tip]::after{top:50%;left:auto;right:calc(100% + 6px);transform:translateY(-50%)}
+.trail [data-tip]::after{left:auto;right:0;transform:none}
+.icon svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.icon:hover{color:var(--accent)}
+.icon.danger{color:var(--bad);background:transparent;border-color:transparent}
+.icon.danger:hover{color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent);border-color:var(--bad)}
+.cp svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.ev .cp{opacity:0;align-self:center}
+.ev:hover .cp,.ev.open .cp,.ev .cp:focus-visible{opacity:1}
+.ev .x .lbl{display:flex;align-items:center;gap:6px}
+.ev .x .lbl .cp{opacity:1;margin-left:auto}
+.ev .x{grid-column:1 / -1;margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.ev .x>div{min-width:0}
+.log{container-type:inline-size}
+@container (max-width:760px){.ev .x{grid-template-columns:1fr}}
+@media (max-width:640px){.ev .x{grid-template-columns:1fr}}
+.ev .x pre{margin:0;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;overflow:auto;white-space:pre;font-size:12px;max-height:260px}
+.ev .x .lbl{font-size:11px;color:var(--faint);margin-bottom:4px;font-family:var(--sans)}
+.empty{padding:40px 14px;text-align:center;color:var(--faint);font-family:var(--sans)}
+.repl{display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--line);flex-wrap:wrap}
+.repl input{font-family:var(--mono);font-size:12.5px}
+.repl .act{width:170px}
+.repl .pl{flex:1;min-width:200px}
+.toast{position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--panel-2);border:1px solid var(--line-strong);border-radius:8px;padding:8px 14px;font-size:13px;opacity:0;pointer-events:none;transition:opacity .2s}
+.toast.show{opacity:1}
+@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+/* panel additions on top of the design */
+[hidden]{display:none!important}
+.ov .card + .card{margin-top:16px}
+.ov .card > .hd{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line)}
+.ov .card > .hd .eyebrow{flex:1}
+.ov textarea{width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--line-strong);border-radius:6px;padding:8px 10px;font:12.5px/1.4 var(--mono)}
+.txlog{max-height:360px;overflow:auto}
+.txlog table{font-size:12px}
+.txlog td,.txlog th{padding:6px 10px;white-space:nowrap}
+.sched{display:flex;align-items:center;gap:6px;margin-top:4px;font-size:11px;color:var(--muted)}
+.sched button{padding:2px 7px;font-size:11px}
+.conn-alert{margin-top:10px;color:var(--bad);font-size:12px;font-weight:600}
+.stline{display:flex;gap:6px;align-items:center;margin-left:auto}
+.hd .note{font-size:11px}
+.empty-st{padding:60px 16px;text-align:center;color:var(--faint)}
+.formerr{color:var(--bad);font-size:12px}
+</style>
+</head>
+<body>
+<div class="app">
+<aside class="side">
+  <div class="brand"><b>OCPP Simulator Control</b><span class="pill" id="pillAll">loading…</span></div>
+  <nav class="nav">
+    <a id="navOv"><span class="id">Overview</span><span class="cs" id="ovCount"></span></a>
+  </nav>
+  <div>
+    <div class="eyebrow" style="margin-bottom:6px">Stations</div>
+    <nav class="nav" id="stList"></nav>
+    <div class="note" id="stEmpty" hidden>No stations yet.</div>
+  </div>
+  <div>
+    <button class="addbtn" id="bAddToggle">+ Add station</button>
+    <form class="addform" id="addForm" hidden style="margin-top:8px">
+      <label>Station id<input id="aId" placeholder="SIM-0004" class="mono" autocomplete="off" required></label>
+      <label>Connectors<input id="aConn" type="number" min="1" max="20" value="1"></label>
+      <label>OCPP URL, optional<input id="aUrl" placeholder="ws://localhost:9000" class="mono"></label>
+      <div class="row"><button class="primary" type="submit" id="aSubmit">Add</button><button type="button" class="ghost" id="bAddCancel">Cancel</button></div>
+      <div class="formerr" id="addErr" hidden></div>
+      <div class="note">The id must exist as a charger at the eMSP with that serial. Until then the CSMS refuses the connection and the station keeps retrying.</div>
+    </form>
+  </div>
+  <div class="foot" id="dirs"></div>
+</aside>
+<div class="content">
+
+<section id="viewOv" class="ov" hidden>
+  <div class="ovhead"><h2>Stations</h2><span class="note" id="ovSub"></span><span style="flex:1"></span><button id="bOvAdd">+ Add station</button></div>
+  <div class="card tablewrap"><table>
+    <thead><tr><th>Station</th><th>Link</th><th>Connector</th><th>Transaction</th><th>Process</th><th>Uptime</th><th></th></tr></thead>
+    <tbody id="ovBody"></tbody>
+  </table>
+  <div class="empty" id="ovEmpty" hidden>No stations. Add one on the left.</div></div>
+  <section class="card">
+    <div class="hd"><span class="eyebrow">Charging keys</span><span class="note" id="keysMeta">idTag[,label] per line, one per account</span></div>
+    <div class="bd">
+      <textarea id="keysText" rows="6" placeholder="idTag,label"></textarea>
+      <div class="row" style="margin-top:8px"><button class="primary" id="bKeysSave">Save keys</button></div>
+    </div>
+  </section>
+  <section class="card">
+    <div class="hd"><span class="eyebrow">Transaction log</span><span class="note">most recent first</span></div>
+    <div class="txlog"><table>
+      <thead><tr><th>Started</th><th>Duration</th><th>Station</th><th>Key (label)</th><th>Txn</th><th>kWh</th><th>Source</th><th>Status</th></tr></thead>
+      <tbody id="txLogBody"></tbody>
+    </table></div>
+  </section>
+</section>
+
+<div id="viewSt" hidden>
+<header class="strip">
+  <h1><span class="dot" id="dot"></span><span id="hName"></span><span class="pill bad" id="pillOff" hidden>Offline</span></h1>
+  <div class="facts">
+    <span><b id="fUrl" class="mono"></b></span>
+    <span><span id="fUpL">connected</span> <b id="fUp" class="num">–</b></span>
+    <span>last heartbeat <b id="fHb" class="num">never</b></span>
+    <span>process <b id="fPid"></b> · admin <b id="fPort"></b> · <b id="fSim"></b></span>
+    <span>pending calls <b id="fPend" class="num">0</b></span>
+  </div>
+  <div class="spacer"></div>
+  <div class="row">
+    <button id="bOffline" class="danger">Go offline</button>
+    <button id="bReconnect">Reconnect</button>
+    <button id="bRestart">Restart process</button>
+    <span id="rmWrap"></span>
+  </div>
+  <div class="chips" id="chips"></div>
+</header>
+
+<div class="cols">
+  <div class="col left">
+    <div id="connectors" class="conns"></div>
+
+    <section class="card">
+      <div class="hd"><span class="eyebrow">Scenarios</span></div>
+      <div class="bd scen">
+        <button data-s="boot">Boot<small>BootNotification + StatusNotification</small></button>
+        <button data-s="hb">Heartbeat<small>one Heartbeat call</small></button>
+        <button data-s="q0" data-test>Quick transaction, 0 kWh<small>start and stop on connector 1</small></button>
+        <button data-s="q1" data-test>Quick transaction, 1 kWh<small>same, with 1.000 kWh metered</small></button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="hd"><span class="eyebrow">Test controls</span><span class="pv note" id="setPv">all defaults</span></div>
+      <div class="grp" style="border-top:0">
+        <div class="grphd"><span class="eyebrow">Delays</span><span class="note">Applies at once. Anything that differs from the default shows as a chip in the top bar.</span></div>
+        <div class="field"><label>Answer calls after<span class="note">every CALLRESULT to a CSMS command</span></label>
+          <div class="ctl"><div class="seg" id="segReply"><button data-v="0">at once</button><button data-v="12000">12 s (outlast eMSP timeout)</button><button data-v="custom">custom</button></div>
+          <input type="number" id="replyCustom" placeholder="ms" min="0" max="600000" style="width:90px" hidden></div>
+        </div>
+        <div class="field"><label>Act on remote commands after<span class="note">RemoteStart / RemoteStop</span></label>
+          <div class="ctl"><div class="seg" id="segAct"><button data-v="1000">1 s</button><button data-v="12000">12 s (slow charger)</button><button data-v="custom">custom</button></div>
+          <input type="number" id="actCustom" placeholder="ms" min="0" max="600000" style="width:90px" hidden></div>
+        </div>
+        <div class="field"><label>Meter values every</label>
+          <div class="ctl"><div class="seg" id="segMeter"><button data-v="1">1 s</button><button data-v="5">5 s</button><button data-v="15">15 s</button><button data-v="60">60 s</button><button data-v="0">off</button></div></div>
+        </div>
+      </div>
+      <div class="grp" data-test>
+        <span class="eyebrow">Fault injection</span>
+        <div class="field"><label>RemoteStart</label>
+          <div class="ctl"><div class="seg" id="segRs"><button data-v="off">answer normally</button><button data-v="ignore">ignore for 60 s</button><button data-v="reject">reject for 60 s</button></div></div>
+        </div>
+        <div class="field"><label>Plug fault<span class="note">connector 1, sent at once</span></label>
+          <div class="ctl">
+            <label class="toggle"><input type="checkbox" id="fFaulted"> Faulted (OtherError)</label>
+            <label class="toggle"><input type="checkbox" id="fTemp"> HighTemperature</label>
+          </div>
+        </div>
+        <div class="note">Plug faults are what the email alert test looks for. Clearing one reports Available.</div>
+      </div>
+    </section>
+
+    <details class="card drawer" id="drawer" data-test>
+      <summary><span class="eyebrow">Connection</span><span class="pv" id="connPv"></span></summary>
+      <div class="grp">
+        <div class="row"><input type="text" id="url" class="mono" placeholder="ws://host or wss://host"><button id="bSetUrl">Set and reconnect</button><button class="ghost" id="bEnv">Reset to .env</button></div>
+        <div class="note">The station id is appended. The URL survives restarts; the station restarts to pick it up, dropping any running session.</div>
+      </div>
+    </details>
+  </div>
+
+  <div class="col right">
+    <section class="card tl">
+      <div class="hd">
+        <span class="eyebrow">Timeline</span>
+        <div class="filters">
+          <div class="lead">
+            <input type="text" id="q" placeholder="filter, e.g. MeterValues">
+            <label class="toggle"><input type="checkbox" id="showPing"> show pings</label>
+          </div>
+          <div class="trail">
+            <div class="seg" id="segKind"><button data-v="all" class="on">All</button><button data-v="frame">OCPP</button><button data-v="proc">Process</button></div>
+            <button class="ghost icon" id="bCopyAll" data-tip="Copy filtered log" aria-label="Copy filtered log"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+            <button class="ghost icon" id="bDownload" data-tip="Download filtered log" aria-label="Download filtered log"><svg viewBox="0 0 24 24"><path d="M12 4v11"/><path d="M7 11l5 5 5-5"/><path d="M4 19h16"/></svg></button>
+            <button class="ghost icon danger" id="bClear" data-tip="Clear timeline" aria-label="Clear timeline"><svg viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/></svg></button>
+          </div>
+        </div>
+      </div>
+      <div class="log" id="log"></div>
+      <form class="repl" id="repl">
+        <input class="act" id="rAct" placeholder="Action" list="acts" autocomplete="off">
+        <datalist id="acts"><option>MeterValues</option><option>Heartbeat</option><option>StatusNotification</option><option>Authorize</option><option>DataTransfer</option><option>DiagnosticsStatusNotification</option><option>FirmwareStatusNotification</option><option>SecurityEventNotification</option></datalist>
+        <input class="pl" id="rPl" placeholder='payload JSON, e.g. {"connectorId":1}' value="{}">
+        <button class="primary" type="submit">Send</button>
+      </form>
+    </section>
+  </div>
+</div>
+</div><!-- /viewSt -->
+<div id="viewLoading" class="empty-st" hidden></div>
+</div><!-- /content -->
+</div><!-- /app -->
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+"use strict";
+// OCPP 1.6 connector statuses, error codes and stop reasons for the pickers.
+const STATUSES=["Available","Preparing","Charging","SuspendedEV","SuspendedEVSE","Finishing","Reserved","Unavailable","Faulted"];
+const ERRS=["NoError","ConnectorLockFailure","EVCommunicationError","GroundFailure","HighTemperature","InternalError","LocalListConflict","OtherError","OverCurrentFailure","OverVoltage","PowerMeterFailure","PowerSwitchFailure","ReaderFailure","ResetFailure","UnderVoltage","WeakSignal"];
+const STOP_REASONS=["Local","Remote","EVDisconnected","PowerLoss","HardReset","EmergencyStop","DeAuthorized","Other"];
+const SPEEDS=[["0","Hold 0 kW"],["3.7","3.7 kW"],["7.4","7.4 kW"],["11","11 kW"],["22","22 kW"],["50","50 kW"],["default","default"]];
+const SUB={
+  Available:"Nothing plugged in. Waiting for a car or a remote start.",
+  Preparing:"Cable plugged in. Authorize and start, or wait for a RemoteStartTransaction.",
+  Charging:"Transaction running. Meter values go out automatically.",
+  Finishing:"Transaction closed, cable still in. Unplug to go back to Available.",
+  Faulted:"Connector reports a fault. Clear the fault to recover.",
+  SuspendedEV:"Car paused charging. No energy flows, the transaction stays open.",
+  SuspendedEVSE:"Charger paused charging. No energy flows, the transaction stays open.",
+  Reserved:"Reserved for a tag.",Unavailable:"Taken out of service.",
+};
+const SELECTED_KEY="ocpp-panel-selected";
+const $=s=>document.querySelector(s);
+const pad=n=>String(n).padStart(2,"0");
+const hms=d=>`${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3,"0")}`;
+const esc=v=>String(v??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmtDur=ms=>{const s=Math.max(0,Math.floor(ms/1000));const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h?`${h}h ${pad(m)}m`:`${m}:${pad(s%60)}`;};
+const kwLabel=w=>(w/1000).toFixed(1);
+
+// ------- state -------
+const sims={};           // sim id -> last /api/sims entry
+let order=[];            // sim ids in listing order
+let defaults=null;       // /api/sims defaults
+const sched={};          // "simId:connectorId" -> scheduler state
+let txSettings=null;
+let selected="overview";
+try{selected=localStorage.getItem(SELECTED_KEY)||"overview";}catch{}
+const T={frames:[],log:"",tz:null,filter:"all",showPing:false,q:"",open:null,clearedAt:{},sig:""};
+
+// ------- API -------
+function toast(m,err){const t=$("#toast");t.textContent=m;t.classList.add("show");t.style.borderColor=err?"var(--bad)":"";clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove("show"),err?4500:2200);}
+async function getJson(path){const r=await fetch(path);return r.json();}
+// POST to the panel. Proxied admin answers come back as {ok,status,response};
+// the sim's own error text is dug out of response for the toast.
+async function post(path,body,okMsg){
+  try{
+    const r=await fetch(path,{method:"POST",headers:{"content-type":"application/json"},body:body===undefined?undefined:JSON.stringify(body)});
+    const d=await r.json().catch(()=>({}));
+    const ok=r.ok&&d.ok!==false;
+    if(!ok){
+      let why=d.error||d.response||("HTTP "+r.status);
+      try{const j=JSON.parse(d.response);why=j.error||j.message||why;}catch{}
+      toast(String(why).slice(0,240),true);
+    }else if(okMsg)toast(okMsg);
+    return {ok,d};
+  }catch(e){toast(String(e),true);return {ok:false,d:null};}
+  finally{refreshSims();}
+}
+const simPost=(id,path,body,msg)=>post(`/api/sims/${encodeURIComponent(id)}/${path}`,body,msg);
+const exec=(id,action,payload,msg)=>simPost(id,"execute",{action,payload},msg===undefined?`${action} sent`:msg);
+const connAction=(id,connectorId,action,extra)=>simPost(id,"connector-action",Object.assign({connectorId,action},extra||{}));
+
+// ------- selection -------
+function cur(){return sims[selected]||null;}
+function select(id){selected=id;try{localStorage.setItem(SELECTED_KEY,id);}catch{}T.open=null;T.sig="";renderAll();refreshTimeline();}
+$("#navOv").onclick=()=>select("overview");
+
+// ------- sidebar -------
+function linkState(s){if(!s.up)return["down","bad"];if(s.connected)return["connected","good"];return[s.offline?"offline":"disconnected","bad"];}
+function connSummary(s){const cs=s.connectors||[];if(!s.up)return"process down";if(!s.connected)return s.offline?"offline":"disconnected";return cs.map(c=>c.status||"?").join(" · ")||"connected";}
+function renderSide(){
+  const n=order.filter(id=>sims[id].connected).length;
+  const pa=$("#pillAll");pa.textContent=order.length?`${n}/${order.length} connected`:"no stations";
+  pa.className="pill "+(!order.length?"":n===order.length?"good":n?"warn":"bad");
+  $("#ovCount").textContent=order.length||"";$("#navOv").classList.toggle("sel",selected==="overview");
+  const l=$("#stList");l.innerHTML="";$("#stEmpty").hidden=order.length>0;
+  order.forEach(id=>{const x=sims[id];const a=document.createElement("a");a.className=id===selected?"sel":"";
+    a.innerHTML=`<span class="dot ${x.connected?"":"off"}"></span><span class="id">${esc(x.cpId)}</span><span class="cs">${esc(connSummary(x))}</span>`;
+    a.title=`${x.id} · admin :${x.adminPort}`;a.onclick=()=>select(id);l.append(a);});
+  if(defaults)$("#dirs").innerHTML=`profiles: ${esc(defaults.profilesDir)}<br>logs: ${esc(defaults.logDir)}`;
+}
+
+// ------- overview -------
+function btn(label,fn,cls){const b=document.createElement("button");b.type="button";b.textContent=label;b.onclick=fn;if(cls)b.className=cls;return b;}
+function schedLabel(st){if(!st)return"";if(st.mode==="auto"){const n=st.tx?st.sessionCount+1:st.sessionCount;const lim=txSettings?.sessionLimit||0;return`auto · ${n}${lim>0?"/"+lim:""}`;}return st.pauseReason==="batch_complete"?"batch done":"manual";}
+function confirmInline(host,text,yes,restore){host.innerHTML="";const c=document.createElement("span");c.className="confirm";c.textContent=text;c.append(btn("Yes",yes,"danger"),btn("Keep",restore,"ghost"));host.append(c);}
+function renderOv(){
+  const b=$("#ovBody");b.innerHTML="";
+  const n=order.filter(id=>sims[id].connected).length;
+  $("#ovSub").textContent=order.length?`${n} of ${order.length} linked`:"";
+  $("#ovEmpty").hidden=order.length>0;
+  order.forEach(id=>{const x=sims[id];const tr=document.createElement("tr");
+    const [lt,lc]=linkState(x);
+    const cs=(x.connectors&&x.connectors.length?x.connectors:Array.from({length:x.numConnectors},(_,i)=>({connectorId:i+1,status:null})))
+      .map(c=>`<span class="badge st-${esc(c.status||"")}" title="Connector ${c.connectorId}">${x.numConnectors>1?c.connectorId+" ":""}${esc(c.status||"unknown")}</span>`).join(" ");
+    const txs=(x.charging||[]).map(t=>`<div>#${esc(t.transactionId)} · ${esc(t.kwh.toFixed(3))} kWh</div>`).join("");
+    const scheds=Array.from({length:x.numConnectors},(_,i)=>i+1).map(c=>{const st=sched[x.id+":"+c];if(!st)return"";
+      return`<div class="sched" data-c="${c}">${x.numConnectors>1?"C"+c+" ":""}scheduler ${esc(schedLabel(st))}${st.mode==="manual"?' <button data-resume>Resume auto</button>':""}</div>`;}).join("");
+    tr.innerHTML=`<td><b class="mono">${esc(x.cpId)}</b><div class="note">${esc(x.id)} · admin :${x.adminPort} · ${x.numConnectors} connector${x.numConnectors>1?"s":""}</div></td>
+      <td><span class="pill ${lc}">${lt}</span></td><td>${cs}</td>
+      <td class="mono">${txs||'<span class="note">none</span>'}${scheds}</td>
+      <td class="mono">${x.managed?(x.pid?"pid "+x.pid:"…"):"external"}</td>
+      <td class="num">${x.connectedSince?fmtDur(Date.now()-Date.parse(x.connectedSince)):"–"}</td><td></td>`;
+    tr.querySelectorAll("[data-resume]").forEach(rb=>rb.onclick=()=>txExec(x.id,+rb.closest("[data-c]").dataset.c,"resume-auto"));
+    const acts=document.createElement("div");acts.className="acts";
+    const fill=()=>{acts.innerHTML="";
+      acts.append(btn("Open",()=>select(id),"primary"),
+        btn(x.connected?"Go offline":"Go online",()=>toggleLink(x)),
+        btn("Restart",()=>confirmInline(acts,`Restart ${x.cpId}?`,()=>restart(x),fill)));
+      if(x.managed)acts.append(btn("Remove",()=>confirmInline(acts,`Remove ${x.cpId}?`,()=>removeSim(x),fill),"ghost"));};
+    fill();tr.lastElementChild.append(acts);b.append(tr);});
+}
+async function refreshTxLog(){
+  if(selected!=="overview")return;
+  const d=await getJson("/api/tx/log?lines=200");
+  $("#txLogBody").innerHTML=d.rows.map(r=>`<tr><td>${esc(r.started_at)}</td><td>${esc(r.session_seconds)}s</td><td>${esc(r.sim)}#${esc(r.connector_id)}</td><td>${esc(r.id_tag)} (${esc(r.label)})</td><td class="mono">${esc(r.transaction_id)}</td><td class="num">${esc(r.kwh)}</td><td>${esc(r.source)}</td><td>${esc(r.status)}</td></tr>`).join("")
+    ||'<tr><td colspan="8" class="note">No sessions yet.</td></tr>';
+}
+async function loadKeys(){const d=await getJson("/api/tx/keys");$("#keysText").value=d.text;$("#keysMeta").textContent=`${d.free}/${d.total} free · idTag[,label] per line`;}
+$("#bKeysSave").onclick=async()=>{const r=await post("/api/tx/keys",{text:$("#keysText").value});if(r.ok)toast(`Saved ${r.d.keys.length} key(s)`);loadKeys();refreshTx();};
+
+// ------- station-level actions -------
+async function toggleLink(s){
+  if(s.connected){await simPost(s.id,"disconnect",undefined,`${s.cpId} offline. It stays offline until Go online or a restart.`);}
+  else{toast(`${s.cpId}: connecting…`);await simPost(s.id,"connect",undefined,`${s.cpId} connected, BootNotification sent`);}
+}
+async function reconnect(s){
+  toast(`${s.cpId}: reconnecting…`);
+  await fetch(`/api/sims/${encodeURIComponent(s.id)}/disconnect`,{method:"POST"});
+  await simPost(s.id,"connect",undefined,`${s.cpId} reconnected, BootNotification sent`);
+}
+async function restart(s){await simPost(s.id,"restart",undefined,`${s.cpId}: restarting, back in about 3 s`);setTimeout(refreshSims,4500);}
+async function removeSim(s){
+  try{const r=await fetch(`/api/sims/${encodeURIComponent(s.id)}`,{method:"DELETE"});const d=await r.json();
+    if(r.ok)toast(`${s.cpId} removed; its log is kept`);else toast(d.error||("HTTP "+r.status),true);}
+  catch(e){toast(String(e),true);}
+  if(selected===s.id)select("overview");refreshSims();refreshTx();
+}
+async function txExec(simId,c,action){
+  try{const r=await fetch(`/api/tx/${encodeURIComponent(simId)}/${c}/${action}`,{method:"POST"});const d=await r.json();
+    if(d.ok===false)toast(`${action}: ${d.error||"failed"}`+(action==="start"&&/no free charging keys/.test(d.error||"")?" (add keys on the Overview, or type an idTag)":""),true);
+    else toast(action==="start"?`Started through the scheduler on connector ${c}`:action==="stop"?`Stopped connector ${c}`:"Handed back to the scheduler");}
+  catch(e){toast(String(e),true);}
+  refreshTx();refreshSims();
+}
+
+// ------- station view -------
+let SV=null; // {id, shape, cards: Map}
+function shapeOf(s){return[s.id,s.numConnectors,s.isTestCharger?"t":"p",s.managed?"m":"x"].join("|");}
+function seg(root,v){(typeof root==="string"?document.querySelectorAll(`#${root} button`):root.querySelectorAll("button")).forEach(b=>b.classList.toggle("on",b.dataset.v===String(v)));}
+
+function buildStation(s){
+  $("#connectors").innerHTML="";
+  const cards=new Map();
+  for(let c=1;c<=s.numConnectors;c++){const k=buildCard(s,c);cards.set(c,k);$("#connectors").append(k.el);}
+  document.querySelectorAll("#viewSt [data-test]").forEach(e=>e.hidden=!s.isTestCharger);
+  const rm=$("#rmWrap");const fillRm=()=>{rm.innerHTML="";if(s.managed)rm.append(btn("Remove",()=>confirmInline(rm,`Remove ${s.cpId}?`,()=>removeSim(sims[s.id]||s),fillRm),"ghost"));};
+  fillRm();
+  $("#url").value="";
+  SV={id:s.id,shape:shapeOf(s),cards};
+}
+
+function buildCard(s,c){
+  const el=document.createElement("section");el.className="card";
+  const test=s.isTestCharger,multi=s.numConnectors>1;
+  el.innerHTML=`<div class="hd"><span class="eyebrow">Connector ${c}</span><span class="note" data-r="sched"></span><span class="badge" data-r="tx">no transaction</span></div>
+  <div class="bd">
+    <div class="conn-state"><div style="flex:1"><div class="big" data-r="big"></div><div class="sub" data-r="sub"></div></div><span class="badge" data-r="err"></span></div>
+    <div class="meters">
+      <div class="meter"><div class="v num" data-r="kw">0.0</div><div class="l">kW now</div></div>
+      <div class="meter"><div class="v num" data-r="kwh">0.000</div><div class="l" data-r="kwhL">kWh this session</div><div class="bar"><i data-r="bar"></i></div></div>
+      <div class="meter"><div class="v num mono" data-r="txid">–</div><div class="l">transaction id</div></div>
+      <div class="meter" data-r="socTile" hidden><div class="v num" data-r="soc">–</div><div class="l" data-r="socL">state of charge</div><div class="bar"><i data-r="socBar"></i></div></div>
+    </div>
+    <div class="conn-alert" data-r="alert" hidden></div>
+    <div class="actions" data-r="actions"></div>
+    ${test?`<div class="stack" style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
+      <div class="field"><label>Charger power${multi?'<span class="note">station-wide</span>':""}</label><div class="ctl"><div class="seg" data-r="speed">${SPEEDS.map(([v,l])=>`<button data-v="${v}">${l}</button>`).join("")}</div></div></div>
+      <div class="field"><label>Stop after <span class="note">kWh, blank = never${multi?", station-wide":""}</span></label><div class="ctl"><input type="number" step="0.25" min="0" placeholder="kWh" style="width:90px" data-r="auto"></div></div>
+      <div class="field"><label>Simulate state of charge <span class="note">SoC in MeterValues, car stops at 100% and reports SuspendedEV</span></label>
+        <div class="ctl">
+          <span class="socf" data-r="socF" hidden><input type="number" min="1" max="1000" step="1" style="width:70px" data-r="socCap" value="60"><span class="note">kWh battery</span>
+          <input type="number" min="0" max="100" step="1" style="width:64px" data-r="socStart" value="20"><span class="note">% at start</span></span>
+          <label class="toggle"><input type="checkbox" data-r="socOn" aria-label="Simulate state of charge"></label>
+        </div>
+      </div>
+    </div>`:""}
+    <details class="more"><summary>Force a status</summary>
+      <div class="row force" style="margin-top:10px"><select data-r="fst">${STATUSES.map(x=>`<option>${x}</option>`).join("")}</select><select data-r="ferr">${ERRS.map(x=>`<option>${x}</option>`).join("")}</select><button data-r="force">Send StatusNotification</button></div>
+      <div class="note" style="margin-top:6px">Sends exactly what you pick, whatever the connector is doing. Suspended stops the energy register, Charging restarts it.</div>
+    </details>
+  </div>`;
+  const r=k=>el.querySelector(`[data-r="${k}"]`);
+  r("force").onclick=()=>exec(s.id,"StatusNotification",{connectorId:c,errorCode:r("ferr").value,status:r("fst").value});
+  if(test){
+    r("speed").querySelectorAll("button").forEach(b=>b.onclick=()=>{const v=b.dataset.v;simPost(s.id,"charging-power",{kw:v==="default"?null:+v},v==="default"?"Charger power back to the default rate":`Charger power ${v} kW`);});
+    r("auto").onchange=e=>{const v=parseFloat(e.target.value);simPost(s.id,"charge-target",{kwh:v>0?v:null},v>0?`Stops itself at ${v} kWh`:"Auto-stop cleared");};
+    const socSend=()=>{const on=r("socOn").checked;simPost(s.id,"soc",on?{connectorId:c,enabled:true,batteryKwh:Math.max(1,+r("socCap").value||60),startPercent:Math.min(100,Math.max(0,+r("socStart").value||0))}:{connectorId:c,enabled:false},
+      on?`Connector ${c}: ${r("socCap").value} kWh battery from ${r("socStart").value}%`:`Connector ${c}: battery simulation off`);};
+    r("socOn").onchange=()=>{r("socF").hidden=!r("socOn").checked;socSend();};
+    r("socCap").onchange=socSend;r("socStart").onchange=socSend;
+  }
+  return {el,r,lastKey:null};
+}
+
+// The connector as a state machine: which buttons fit what it last reported.
+function renderActions(s,c,k,status,tx,st){
+  const a=k.r("actions");a.innerHTML="";
+  const scheduled=!!(st&&st.tx);
+  const stop=reason=>scheduled?txExec(s.id,c,"stop"):connAction(s.id,c,"stop",{reason});
+  if(status==="Available"||(!status&&!tx)){
+    a.append(btn("Plug in",()=>connAction(s.id,c,"plug_in"),"primary"));
+    const hint=document.createElement("span");hint.className="hint";hint.textContent="Or wait for a RemoteStartTransaction from the eMSP.";a.append(hint);
+  }else if(status==="Preparing"&&!tx){
+    const tag=document.createElement("input");tag.placeholder="idTag · empty = next free key";tag.className="mono";tag.dataset.r="tag";
+    const t=()=>tag.value.trim();
+    a.append(tag,btn("Authorize",()=>connAction(s.id,c,"authorize",t()?{idTag:t()}:{})),
+      btn("Start transaction",()=>t()?connAction(s.id,c,"start",{idTag:t()}):txExec(s.id,c,"start"),"primary"),
+      btn("Unplug",()=>connAction(s.id,c,"unplug"),"danger end"));
+  }else if(tx&&(status==="SuspendedEV"||status==="SuspendedEVSE")){
+    a.append(btn("Resume charging",()=>connAction(s.id,c,"resume"),"primary"),btn("Stop transaction",()=>stop("Local")),
+      btn("Unplug",()=>scheduled?txExec(s.id,c,"stop"):connAction(s.id,c,"unplug"),"danger end"));
+  }else if(tx){
+    const sel=document.createElement("select");STOP_REASONS.forEach(x=>{const o=document.createElement("option");o.textContent=x;sel.append(o);});
+    if(scheduled){sel.disabled=true;sel.title="The scheduler stops its own sessions";}
+    a.append(btn("Stop transaction",()=>stop(sel.value),"primary"),sel,btn("Meter tick",()=>simPost(s.id,"meter-tick",{connectorId:c},"MeterValues sent")),
+      btn("Suspend",()=>connAction(s.id,c,"suspend"),"ghost"),
+      btn("Unplug",()=>scheduled?txExec(s.id,c,"stop"):connAction(s.id,c,"unplug"),"danger end"));
+  }else if(status==="Finishing"){
+    a.append(btn("Unplug",()=>connAction(s.id,c,"unplug"),"primary"));
+  }else if(status==="Faulted"){
+    const f=(s.faults||{})[c]||{};
+    a.append(btn("Clear fault",()=>{
+      if(f.faulted)simPost(s.id,"fault",{connectorId:c,type:"faulted",on:false},"Fault cleared, connector Available");
+      else if(f.highTemperature)simPost(s.id,"fault",{connectorId:c,type:"high_temperature",on:false},"Fault cleared, connector Available");
+      else connAction(s.id,c,"unplug");},"primary"));
+  }else{
+    a.append(btn("Back to Available",()=>exec(s.id,"StatusNotification",{connectorId:c,errorCode:"NoError",status:"Available"}),"primary"));
+  }
+}
+
+function updateStation(s){
+  if(!SV||SV.shape!==shapeOf(s))buildStation(s);
+  // header
+  $("#hName").textContent=s.cpId;$("#dot").classList.toggle("off",!s.connected);
+  $("#pillOff").hidden=!!s.connected;$("#pillOff").textContent=!s.up?"Process down":s.offline?"Offline":"Disconnected";
+  const w=s.wsUrlState;$("#fUrl").textContent=w&&w.fullUrl?w.fullUrl:`${s.wsUrl}/${s.cpId}`;
+  $("#fPid").textContent=s.managed?(s.pid?"pid "+s.pid:"starting"):"external";$("#fPort").textContent=":"+s.adminPort;$("#fSim").textContent=s.id;
+  const bo=$("#bOffline");bo.textContent=s.connected?"Go offline":"Go online";bo.className=s.connected?"danger":"primary";bo.disabled=!s.up;
+  $("#bReconnect").disabled=!s.up;$("#bRestart").disabled=!s.up;
+  tick();
+  // connectors
+  const byId={};(s.connectors||[]).forEach(c=>byId[c.connectorId]=c);
+  const live={};(s.charging||[]).forEach(t=>live[t.connectorId]=t);
+  const target=s.chargeTarget?s.chargeTarget.kwh:null;
+  SV.cards.forEach((k,c)=>{
+    const cs=byId[c]||{};const tx=cs.transaction||(live[c]?{transactionId:live[c].transactionId,idTag:live[c].idTag,meterWh:live[c].meterWh,powerW:null,socPercent:null}:null);
+    const status=s.connected||s.up?cs.status||(tx?"Charging":null):null;
+    const st=sched[s.id+":"+c];
+    k.r("big").textContent=!s.up?"Process down":status||"Unknown";
+    k.r("sub").textContent=!s.up?"The station process is not answering. Restart it, or wait for its supervisor.":status?SUB[status]||"":"No status reported since this process started.";
+    const e=k.r("err");e.textContent=cs.errorCode||"NoError";e.className="badge st-"+(status||"");
+    const tb=k.r("tx");tb.textContent=tx?`tx ${tx.transactionId} · ${tx.idTag}`:"no transaction";tb.className="badge "+(tx?"st-Charging":"");
+    k.r("sched").textContent=st?`scheduler ${schedLabel(st)}`:"";
+    k.r("kw").textContent=tx&&tx.powerW!=null?kwLabel(tx.powerW):"0.0";
+    k.r("kwh").textContent=tx?(tx.meterWh/1000).toFixed(3):"0.000";
+    k.r("kwhL").textContent=target?`kWh, stops at ${target}`:"kWh this session";
+    k.r("bar").style.width=tx&&target?Math.min(100,tx.meterWh/1000/target*100)+"%":"0%";
+    k.r("txid").textContent=tx?tx.transactionId:"–";
+    const soc=cs.soc;k.r("socTile").hidden=!soc;
+    if(soc){const v=tx&&tx.socPercent!=null?tx.socPercent:soc.startPercent;k.r("soc").textContent=Math.floor(v)+"%";k.r("socBar").style.width=v+"%";
+      k.r("socL").textContent=tx&&tx.full?`full · ${soc.batteryKwh} kWh battery`:`SoC · ${soc.batteryKwh} kWh battery`;}
+    const al=k.r("alert");const fails=st?st.consecutiveFailures:0;al.hidden=!(fails>=(txSettings?.failureAlertThreshold||5));
+    al.textContent=`Scheduler: ${fails} failed start attempts in a row. Is the admin API down?`;
+    if(s.isTestCharger){
+      const cp=s.chargingPower||{};const kw=cp.kw;seg(k.r("speed"),kw==null?"default":String(kw));
+      const ai=k.r("auto");if(document.activeElement!==ai)ai.value=target??"";
+      const on=k.r("socOn");if(document.activeElement!==on)on.checked=!!soc;k.r("socF").hidden=!on.checked;
+      if(soc){if(document.activeElement!==k.r("socCap"))k.r("socCap").value=soc.batteryKwh;if(document.activeElement!==k.r("socStart"))k.r("socStart").value=soc.startPercent;}
+    }
+    const key=[s.up,status,!!tx,!!(st&&st.tx),JSON.stringify((s.faults||{})[c]||{})].join("|");
+    if(k.lastKey!==key){const keep=k.r("tag")?.value;renderActions(s,c,k,status,tx,st);k.lastKey=key;if(keep&&k.r("tag"))k.r("tag").value=keep;}
+  });
+  // test controls
+  const d=s.delays||{replyMs:0,actMs:1000};
+  const rc=$("#replyCustom"),ac=$("#actCustom");
+  const replyPreset=[0,12000].includes(d.replyMs);if(!rc.dataset.editing){seg("segReply",replyPreset?d.replyMs:"custom");rc.hidden=replyPreset;if(document.activeElement!==rc)rc.value=d.replyMs;}
+  const actPreset=[1000,12000].includes(d.actMs);if(!ac.dataset.editing){seg("segAct",actPreset?d.actMs:"custom");ac.hidden=actPreset;if(document.activeElement!==ac)ac.value=d.actMs;}
+  const m=s.meter||{auto:true,intervalMs:15000};seg("segMeter",m.auto?String(Math.round(m.intervalMs/1000)):"0");
+  if(s.isTestCharger){
+    const fm=s.failMode||{mode:"off"};seg("segRs",fm.mode==="accept_no_start"?"":fm.mode);
+    const f=(s.faults||{})[1]||{};$("#fFaulted").checked=!!f.faulted;$("#fTemp").checked=!!f.highTemperature;
+    if(w&&w.url){$("#connPv").textContent=w.url+(w.source==="override"?" (override)":" (from .env)");const ui=$("#url");if(document.activeElement!==ui&&!ui.value)ui.value=w.url;}
+  }
+  chips(s);
+}
+
+// What differs from the defaults, as clearable chips in the top bar.
+function chips(s){
+  const out=[];const d=s.delays||{};
+  if(d.replyMs>0)out.push({c:"",t:`Replies delayed ${d.replyMs/1000} s`,clear:()=>simPost(s.id,"delays",{replyMs:0})});
+  if(d.actMs!=null&&d.actMs!==1000)out.push({c:"",t:`Acts on remote commands after ${d.actMs/1000} s`,clear:()=>simPost(s.id,"delays",{actMs:1000})});
+  const m=s.meter;
+  if(m&&!m.auto)out.push({c:"info",t:"Auto meter off",clear:()=>simPost(s.id,"meter",{auto:true})});
+  else if(m&&m.intervalMs!==15000)out.push({c:"info",t:`Meter values every ${Math.round(m.intervalMs/1000)} s`,clear:()=>simPost(s.id,"meter",{intervalSeconds:15})});
+  const fm=s.failMode;
+  if(fm&&fm.mode&&fm.mode!=="off")out.push({c:"bad",t:`RemoteStart: ${fm.mode}${fm.expiresInMs!=null?", "+Math.ceil(fm.expiresInMs/1000)+" s left":""}`,clear:()=>simPost(s.id,"fail-mode",{mode:"off"})});
+  Object.entries(s.faults||{}).forEach(([cid,f])=>{
+    if(f.faulted)out.push({c:"bad",t:`C${cid} Faulted (OtherError)`,clear:()=>simPost(s.id,"fault",{connectorId:+cid,type:"faulted",on:false})});
+    if(f.highTemperature)out.push({c:"bad",t:`C${cid} HighTemperature`,clear:()=>simPost(s.id,"fault",{connectorId:+cid,type:"high_temperature",on:false})});
+  });
+  const cp=s.chargingPower;
+  if(cp&&cp.kw===0)out.push({c:"",t:"Holding 0 kW",clear:()=>simPost(s.id,"charging-power",{kw:null})});
+  else if(cp&&cp.kw!=null)out.push({c:"info",t:`Charger power ${cp.kw} kW`,clear:()=>simPost(s.id,"charging-power",{kw:null})});
+  if(s.chargeTarget&&s.chargeTarget.kwh!=null)out.push({c:"info",t:`Auto-stop at ${s.chargeTarget.kwh} kWh`,clear:()=>simPost(s.id,"charge-target",{kwh:null})});
+  (s.connectors||[]).forEach(c=>{if(c.soc)out.push({c:"info",t:`${s.numConnectors>1?"C"+c.connectorId+" ":""}battery ${c.soc.batteryKwh} kWh from ${c.soc.startPercent}%`,clear:()=>simPost(s.id,"soc",{connectorId:c.connectorId,enabled:false})});});
+  if(s.wsUrlState&&s.wsUrlState.source==="override")out.push({c:"info",t:"OCPP URL override",clear:()=>setUrl(s,null)});
+  const el=$("#chips");el.innerHTML="";
+  out.forEach(o=>{const ch=document.createElement("span");ch.className="chip "+o.c;const sp=document.createElement("span");sp.textContent=o.t;ch.append(sp);const b=document.createElement("button");b.title="Clear";b.textContent="×";b.onclick=o.clear;ch.appendChild(b);el.appendChild(ch);});
+  $("#setPv").textContent=out.length?`${out.length} override${out.length>1?"s":""} active`:"all defaults";
+}
+
+function setUrl(s,url){
+  const label=url==null?"the .env default":url;
+  if(!confirm(`${s.cpId}: point OCPP at ${label}? The station restarts and reconnects in about 3 s; a running session is dropped.`))return;
+  simPost(s.id,"ws-url",{url},`OCPP URL set to ${label}, reconnecting…`);setTimeout(refreshSims,4500);
+}
+
+// static wiring of the station view (acts on whatever station is shown)
+document.querySelectorAll("#segReply button").forEach(b=>b.onclick=()=>{const s=cur();if(!s)return;const rc=$("#replyCustom");
+  if(b.dataset.v==="custom"){seg("segReply","custom");rc.hidden=false;rc.dataset.editing="1";rc.focus();}else{delete rc.dataset.editing;simPost(s.id,"delays",{replyMs:+b.dataset.v});}});
+$("#replyCustom").onchange=e=>{const s=cur();delete e.target.dataset.editing;if(s)simPost(s.id,"delays",{replyMs:Math.max(0,+e.target.value||0)});};
+document.querySelectorAll("#segAct button").forEach(b=>b.onclick=()=>{const s=cur();if(!s)return;const ac=$("#actCustom");
+  if(b.dataset.v==="custom"){seg("segAct","custom");ac.hidden=false;ac.dataset.editing="1";ac.focus();}else{delete ac.dataset.editing;simPost(s.id,"delays",{actMs:+b.dataset.v});}});
+$("#actCustom").onchange=e=>{const s=cur();delete e.target.dataset.editing;if(s)simPost(s.id,"delays",{actMs:Math.max(0,+e.target.value||0)});};
+document.querySelectorAll("#segMeter button").forEach(b=>b.onclick=()=>{const s=cur();if(!s)return;const v=+b.dataset.v;
+  simPost(s.id,"meter",v===0?{auto:false}:{auto:true,intervalSeconds:v},v===0?"Auto meter off: use Meter tick":`Meter values every ${v} s`);});
+document.querySelectorAll("#segRs button").forEach(b=>b.onclick=()=>{const s=cur();if(!s)return;const mode=b.dataset.v;
+  simPost(s.id,"fail-mode",mode==="off"?{mode}:{mode,durationMs:60000},mode==="off"?"RemoteStart answered normally":`RemoteStart: ${mode} for 60 s`);});
+$("#fFaulted").onchange=e=>{const s=cur();if(s)simPost(s.id,"fault",{connectorId:1,type:"faulted",on:e.target.checked});};
+$("#fTemp").onchange=e=>{const s=cur();if(s)simPost(s.id,"fault",{connectorId:1,type:"high_temperature",on:e.target.checked});};
+$("#bSetUrl").onclick=()=>{const s=cur();if(!s)return;const v=$("#url").value.trim();if(!/^wss?:\/\//i.test(v))return toast("The URL must start with ws:// or wss://",true);setUrl(s,v);};
+$("#bEnv").onclick=()=>{const s=cur();if(s)setUrl(s,null);};
+$("#bOffline").onclick=()=>{const s=cur();if(s)toggleLink(s);};
+$("#bReconnect").onclick=()=>{const s=cur();if(s)reconnect(s);};
+$("#bRestart").onclick=()=>{const s=cur();if(s&&confirm(`Restart ${s.cpId}? A running session is dropped; it reconnects in about 3 s.`))restart(s);};
+document.querySelectorAll(".scen button").forEach(b=>b.onclick=async()=>{const s=cur();if(!s)return;const k=b.dataset.s;
+  if(k==="boot"){
+    await exec(s.id,"BootNotification",{chargePointVendor:"Solidstudio",chargePointModel:"VirtualChargePoint",chargePointSerialNumber:"S001",firmwareVersion:"1.0.0"},null);
+    // Re-announce what each connector last reported, like the station's own boot.
+    for(const c of (s.connectors&&s.connectors.length?s.connectors:[{connectorId:1}]))
+      await exec(s.id,"StatusNotification",{connectorId:c.connectorId,errorCode:c.errorCode||"NoError",status:c.status||"Available"},null);
+    toast("BootNotification and connector statuses sent");
+  }else if(k==="hb")exec(s.id,"Heartbeat",{});
+  else{const kwh=k==="q1"?1:0;toast(`Creating a ${kwh} kWh transaction…`);
+    const r=await simPost(s.id,"quick-tx",{kwh});if(r.ok)toast(`${kwh} kWh transaction #${r.d.transactionId} done`);refreshTx();}
+});
+
+// ------- timeline -------
+// OCPP frames from the station's ring buffer, paired CALL with its answer,
+// merged with its process log (minus the frame lines, already shown).
+function buildEvents(frames,log){
+  const ev=[];const calls={};
+  for(const f of frames){
+    let m;try{m=JSON.parse(f.text);}catch{continue;}
+    const t=new Date(f.at);
+    if(m[0]===2){const e={key:"f"+m[1]+f.direction,kind:"frame",id:m[1],t,dir:f.direction,action:m[2],payload:m[3],reply:null,status:"wait"};calls[m[1]]=e;ev.push(e);}
+    else{const e=calls[m[1]];if(!e)continue;e.replyAt=t;e.rtt=t-e.t;
+      if(m[0]===3){e.reply=m[2];e.status="ok";}else{e.reply={errorCode:m[2],errorDescription:m[3],errorDetails:m[4]};e.status="err";}}
+  }
+  let n=0;
+  for(const raw of (log||"").split("\n")){
+    const line=raw.replace(/\x1b\[[0-9;]*m/g,"").trimEnd();if(!line)continue;n++;
+    if(/(Sending message|Receive message|Responding with) /.test(line))continue;
+    let t=null,level="info",msg=line;
+    let mm=line.match(/^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d) (\w+): (.*)$/);
+    // Station time is the panel host's local time; tz is that host's offset.
+    if(mm){t=T.tz==null?new Date(`${mm[1]}T${mm[2]}`):new Date(Date.parse(`${mm[1]}T${mm[2]}Z`)+T.tz*60000);level=mm[3];msg=mm[4];}
+    else if((mm=line.match(/^\[panel\] (\S+) \S+ (.*)$/))){t=new Date(mm[1]);msg="panel: "+mm[2];}
+    if(!t||isNaN(t))continue;
+    ev.push({key:"p"+n+":"+line,kind:"proc",t,level:level==="error"?"error":level==="warn"?"warn":"info",msg});
+  }
+  ev.sort((a,b)=>a.t-b.t);
+  return ev;
+}
+function summarize(e){
+  const p=e.payload||{};const s=cur();const cid=p.connectorId&&s&&s.numConnectors>1?`C${p.connectorId} · `:"";
+  switch(e.action){
+    case"StatusNotification":return`${cid}${p.status}${p.errorCode&&p.errorCode!=="NoError"?" · "+p.errorCode:""}`;
+    case"MeterValues":{const sv=p.meterValue?.[0]?.sampledValue||[];return cid+sv.filter(x=>!x.phase).map(x=>x.measurand==="SoC"?`SoC ${x.value}%`:`${x.value} ${x.unit||""}`).join(" · ");}
+    case"StartTransaction":return`${cid}idTag ${p.idTag} · meterStart ${p.meterStart}`+(e.reply?.transactionId!=null?` → tx ${e.reply.transactionId}`:"");
+    case"StopTransaction":return`tx ${p.transactionId} · meterStop ${p.meterStop}${p.reason?" · "+p.reason:""}`;
+    case"Authorize":return`idTag ${p.idTag}`+(e.reply?.idTagInfo?` → ${e.reply.idTagInfo.status}`:"");
+    case"BootNotification":return`${p.chargePointVendor} ${p.chargePointModel}`+(e.reply?.status?` → ${e.reply.status}, interval ${e.reply.interval}`:"");
+    case"Heartbeat":return e.reply?.currentTime?`→ ${e.reply.currentTime}`:"";
+    case"RemoteStartTransaction":return`${p.connectorId?"C"+p.connectorId+" · ":""}idTag ${p.idTag}`+(e.reply?.status?` → ${e.reply.status}`:"");
+    case"RemoteStopTransaction":return`tx ${p.transactionId}`+(e.reply?.status?` → ${e.reply.status}`:"");
+    default:return JSON.stringify(p).slice(0,90);
+  }
+}
+function visibleEvents(){
+  const s=cur();if(!s)return[];
+  const since=T.clearedAt[s.id];const q=T.q.toLowerCase();
+  return buildEvents(T.frames,T.log).filter(e=>{
+    if(since&&e.t<=since)return false;
+    if(T.filter!=="all"&&e.kind!==T.filter)return false;
+    if(e.kind==="proc"&&!T.showPing&&/\bP[IO]NG\b/i.test(e.msg))return false;
+    if(q){const hay=e.kind==="proc"?e.msg:(e.action+" "+JSON.stringify(e.payload)+" "+JSON.stringify(e.reply||""));if(!hay.toLowerCase().includes(q))return false;}
+    return true;
+  });
+}
+function rawLog(rows){
+  return rows.map(e=>{
+    if(e.kind==="proc")return`${e.t.toISOString()} [${e.level}] ${e.msg}`;
+    const a=e.dir==="out"?"->":"<-",b=e.dir==="out"?"<-":"->";
+    const out=[`${e.t.toISOString()} ${a} ${JSON.stringify([2,e.id,e.action,e.payload])}`];
+    if(e.reply)out.push(`${e.replyAt.toISOString()} ${b} ${JSON.stringify(e.status==="err"?[4,e.id,e.reply.errorCode,e.reply.errorDescription,e.reply.errorDetails]:[3,e.id,e.reply])}`);
+    return out.join("\n");
+  }).join("\n");
+}
+const CP='<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>';
+function copyText(txt){const done=()=>toast("Copied");const fail=()=>{const ta=document.createElement("textarea");ta.value=txt;document.body.append(ta);ta.select();try{document.execCommand("copy");done();}catch{toast("Copy failed, select the text manually",true);}ta.remove();};
+  if(navigator.clipboard?.writeText)navigator.clipboard.writeText(txt).then(done,fail);else fail();}
+function cpBtn(getText,title){const b=document.createElement("button");b.className="cp";b.type="button";b.dataset.tip=title||"Copy";b.setAttribute("aria-label",title||"Copy");b.innerHTML=CP;b.onclick=ev=>{ev.stopPropagation();copyText(getText());};return b;}
+function renderLog(force){
+  const el=$("#log");const rows=visibleEvents();
+  const sig=rows.length+"|"+(rows.length?rows[rows.length-1].key+rows[rows.length-1].status:"")+"|"+T.open+"|"+rows.filter(e=>e.status==="wait").length;
+  if(!force&&sig===T.sig)return;T.sig=sig;
+  const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<40;
+  if(!rows.length){el.innerHTML='<div class="empty">Nothing here yet. Plug in a car or run a scenario.</div>';return;}
+  el.innerHTML="";
+  rows.slice(-300).forEach(e=>{
+    const d=document.createElement("div");
+    d.className="ev "+(e.kind==="proc"?"proc":"")+(e.status==="err"||e.level!=="info"&&e.kind==="proc"?" err":"")+(T.open===e.key?" open":"");
+    if(e.kind==="proc"){
+      d.innerHTML=`<span class="t num">${hms(e.t)}</span><span class="d proc">·</span><span class="a">${esc(e.msg)}</span><span class="r">${esc(e.level)}</span>`;
+      d.append(cpBtn(()=>`${hms(e.t)} ${e.msg}`,"Copy log line"));
+    }else{
+      const r=e.status==="wait"?"waiting…":e.status==="err"?"CALLERROR":`${e.rtt} ms`;
+      const who=e.dir==="out"?"":" from CSMS";
+      d.innerHTML=`<span class="t num">${hms(e.t)}</span><span class="d ${e.dir}" title="${e.dir==="out"?"station → CSMS":"CSMS → station"}">${e.dir==="out"?"→":"←"}</span><span class="a"><span class="act">${esc(e.action)}</span><span class="sum">${esc(summarize(e))}</span></span><span class="r ${e.status}">${r}</span>`;
+      d.append(cpBtn(()=>rawLog([e]),"Copy CALL and answer frames"));
+      if(T.open===e.key){
+        const x=document.createElement("div");x.className="x";
+        const pane=(lbl,obj)=>{const w=document.createElement("div");const l=document.createElement("div");l.className="lbl";l.textContent=lbl;const pre=document.createElement("pre");pre.textContent=obj?JSON.stringify(obj,null,2):"";if(obj)l.append(cpBtn(()=>JSON.stringify(obj,null,2),"Copy payload"));w.append(l,pre);return w;};
+        x.append(pane(`CALL${who} · ${e.id}`,e.payload),pane(e.reply?`${e.status==="err"?"CALLERROR":"CALLRESULT"} · ${hms(e.replyAt)}`:"no reply yet",e.reply));
+        x.onclick=ev=>ev.stopPropagation();d.append(x);
+      }
+      d.onclick=()=>{T.open=T.open===e.key?null:e.key;renderLog(true);};
+    }
+    el.append(d);
+  });
+  if(atBottom||T.open===null)el.scrollTop=el.scrollHeight;
+  // Station calls still waiting for the CSMS (the last two minutes; older ones are lost).
+  const s=cur();if(s)$("#fPend").textContent=buildEvents(T.frames,"").filter(e=>e.dir==="out"&&e.status==="wait"&&Date.now()-e.t<120000).length;
+}
+async function refreshTimeline(){
+  const s=cur();if(!s)return;const id=s.id;
+  try{
+    const [f,l]=await Promise.all([getJson(`/api/sims/${encodeURIComponent(id)}/frames?limit=500`),getJson(`/api/sims/${encodeURIComponent(id)}/logs?lines=400`)]);
+    if(selected!==id)return;
+    T.frames=f.frames||[];T.log=l.log||"";T.tz=l.tzOffsetMinutes??null;renderLog();
+  }catch{}
+}
+document.querySelectorAll("#segKind button").forEach(b=>b.onclick=()=>{T.filter=b.dataset.v;seg("segKind",T.filter);renderLog(true);});
+$("#showPing").onchange=e=>{T.showPing=e.target.checked;renderLog(true);};
+$("#q").oninput=e=>{T.q=e.target.value;renderLog(true);};
+$("#bClear").onclick=()=>{const s=cur();if(!s)return;T.clearedAt[s.id]=new Date();T.open=null;renderLog(true);};
+$("#bCopyAll").onclick=()=>{const rows=visibleEvents();if(!rows.length)return toast("Nothing to copy");copyText(rawLog(rows));};
+$("#bDownload").onclick=()=>{const rows=visibleEvents();if(!rows.length)return toast("Nothing to download");const s=cur();
+  const name=`${s?s.cpId:"simulator"}-${new Date().toISOString().replace(/[:.]/g,"-")}.txt`;
+  const url=URL.createObjectURL(new Blob([rawLog(rows)+"\n"],{type:"text/plain"}));const a=document.createElement("a");a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),2000);toast(`${rows.length} lines to ${name}`);};
+$("#repl").onsubmit=async e=>{e.preventDefault();const s=cur();if(!s)return;const a=$("#rAct").value.trim();if(!a)return toast("Enter an action",true);
+  let p;try{p=JSON.parse($("#rPl").value||"{}");}catch{return toast("Payload is not valid JSON",true);}
+  const r=await exec(s.id,a,p);if(r.ok)$("#rAct").value="";setTimeout(refreshTimeline,400);};
+// keep the sticky timeline below the header, whatever the chip row does to its height
+const strip=document.querySelector(".strip");const setStripH=()=>document.documentElement.style.setProperty("--striph",strip.getBoundingClientRect().height+"px");
+if(window.ResizeObserver)new ResizeObserver(setStripH).observe(strip);
+
+// ------- add station -------
+const showAddErr=m=>{const e=$("#addErr");e.textContent=m||"";e.hidden=!m;};
+$("#bAddToggle").onclick=()=>{const f=$("#addForm");f.hidden=!f.hidden;if(!f.hidden)$("#aId").focus();};
+$("#bOvAdd").onclick=()=>{$("#addForm").hidden=false;$("#aId").focus();};
+$("#bAddCancel").onclick=()=>{$("#addForm").hidden=true;showAddErr("");};
+$("#addForm").onsubmit=async e=>{e.preventDefault();
+  const cpId=$("#aId").value.trim();if(!cpId)return showAddErr("Enter a station id");
+  const body={cpId,connectors:Math.max(1,+$("#aConn").value||1)};const u=$("#aUrl").value.trim();if(u)body.wsUrl=u;
+  $("#aSubmit").disabled=true;showAddErr("");
+  try{const r=await fetch("/api/sims",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});const d=await r.json();
+    if(!r.ok)return showAddErr(d.error||("HTTP "+r.status));
+    toast(`${d.sim.cpId} added as ${d.sim.id} (admin :${d.sim.adminPort}), connecting…`);
+    $("#aId").value="";$("#aConn").value="1";$("#aUrl").value="";$("#addForm").hidden=true;
+    await refreshSims();select(d.sim.id);refreshTx();
+  }catch(err){showAddErr("Request failed: "+err);}finally{$("#aSubmit").disabled=false;}
+};
+
+// ------- render loop -------
+function renderAll(){
+  const ov=selected==="overview";const s=cur();
+  $("#viewOv").hidden=!ov;$("#viewSt").hidden=ov||!s;$("#viewLoading").hidden=ov||!!s;
+  if(!ov&&!s)$("#viewLoading").textContent=order.length||defaults?"That station is gone.":"Loading…";
+  renderSide();
+  if(ov)renderOv();else if(s){updateStation(s);setStripH();}
+}
+function tick(){
+  const s=cur();if(!s||selected==="overview")return;
+  const since=s.connectedSince?Date.parse(s.connectedSince):null;
+  $("#fUpL").textContent=s.connected?"connected":"offline";
+  $("#fUp").textContent=s.connected&&since?fmtDur(Date.now()-since):"–";$("#fUp").classList.toggle("off",!s.connected);
+  $("#fHb").textContent=s.lastHeartbeatAt?`${Math.round((Date.now()-Date.parse(s.lastHeartbeatAt))/1000)} s ago`:"never";
+}
+async function refreshSims(){
+  try{
+    const d=await getJson("/api/sims");defaults=d.defaults;
+    const listed=new Set(d.sims.map(s=>s.id));Object.keys(sims).forEach(id=>{if(!listed.has(id))delete sims[id];});
+    d.sims.forEach(s=>sims[s.id]=s);order=d.sims.map(s=>s.id);
+    if(defaults)$("#aUrl").placeholder=defaults.wsUrl;
+    if(selected!=="overview"&&!sims[selected]){SV=null;select("overview");return;}
+    renderAll();
+  }catch{}
+}
+async function refreshTx(){
+  try{const d=await getJson("/api/tx/state");txSettings=d.txSettings;
+    Object.keys(sched).forEach(k=>delete sched[k]);d.states.forEach(st=>sched[st.simId+":"+st.connectorId]=st);
+    if(selected==="overview"){renderOv();$("#keysMeta").textContent=`${d.freeKeys}/${d.totalKeys} free · idTag[,label] per line`;}
+    else if(cur())updateStation(cur());
+  }catch{}
+}
+(async function loop(){
+  renderAll();
+  await refreshSims();await refreshTx();refreshTimeline();refreshTxLog();loadKeys().catch(()=>{});
+  setInterval(refreshSims,2000);setInterval(refreshTx,3000);setInterval(refreshTimeline,2000);setInterval(refreshTxLog,5000);setInterval(tick,1000);
+})();
+})();
+</script>
+</body>
+</html>

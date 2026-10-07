@@ -6,15 +6,14 @@
 // never the total. Nothing else in the stack exercises that rule, which is
 // why the phase samples are on by default for 1.6. METER_PHASE_SAMPLES=false
 // restores upstream's single Energy.Active.Import.Register sample in kWh.
+import { LEGACY_RATE_W, type TransactionId } from "../transactionManager";
 import type { VCP } from "../vcp";
 
 export const PHASE_SAMPLES_ENABLED =
   process.env.METER_PHASE_SAMPLES !== "false";
 
-// The legacy fixed synthetic rate (transactionManager.getMeterValue with no
-// charging power set) is 10 Wh per second, i.e. 36 kW.
-const LEGACY_RATE_W = 36_000;
-// A 60 kWh battery that starts a session at 20 %.
+// Without a battery simulated on the connector (admin /soc), SoC is reported
+// as if a 60 kWh battery started the session at 20 %, as it always was.
 const BATTERY_WH = 60_000;
 const SOC_START_PERCENT = 20;
 const PHASE_VOLTAGE = 230;
@@ -39,8 +38,25 @@ type SampledValues = [SampledValue, ...SampledValue[]];
 
 export const sampledValues = (
   vcp: VCP,
+  transactionId: TransactionId,
   meterValueWh: number,
 ): SampledValues => {
+  const snapshot = vcp.transactionManager.snapshot(transactionId);
+  const common = { context: "Sample.Periodic", format: "Raw" } as const;
+  // A simulated battery's SoC is reported whatever the sample set, since it
+  // was asked for; the legacy fixed curve only rides along with the phases.
+  const simulatedSoc: SampledValue[] =
+    snapshot?.socPercent != null
+      ? [
+          {
+            value: String(Math.floor(snapshot.socPercent)),
+            ...common,
+            measurand: "SoC",
+            location: "EV",
+            unit: "Percent",
+          },
+        ]
+      : [];
   if (!PHASE_SAMPLES_ENABLED) {
     return [
       {
@@ -48,15 +64,19 @@ export const sampledValues = (
         measurand: "Energy.Active.Import.Register",
         unit: "kWh",
       },
+      ...simulatedSoc,
     ];
   }
-  const powerW = vcp.transactionManager.chargingPowerW ?? LEGACY_RATE_W;
-  const soc = Math.min(
-    100,
-    SOC_START_PERCENT + (meterValueWh / BATTERY_WH) * 100,
-  );
+  const powerW =
+    snapshot?.powerW ?? vcp.transactionManager.chargingPowerW ?? LEGACY_RATE_W;
+  // Floored for a simulated battery so 100 means full, never 99.5.
+  const soc =
+    snapshot?.socPercent != null
+      ? Math.floor(snapshot.socPercent)
+      : Math.round(
+          Math.min(100, SOC_START_PERCENT + (meterValueWh / BATTERY_WH) * 100),
+        );
   const perPhaseA = Math.round((powerW / 3 / PHASE_VOLTAGE) * 10) / 10;
-  const common = { context: "Sample.Periodic", format: "Raw" } as const;
   const energy: SampledValue = {
     value: String(Math.round(meterValueWh)),
     ...common,
@@ -72,7 +92,7 @@ export const sampledValues = (
     unit: "W",
   };
   const stateOfCharge: SampledValue = {
-    value: String(Math.round(soc)),
+    value: String(soc),
     ...common,
     measurand: "SoC",
     location: "EV",

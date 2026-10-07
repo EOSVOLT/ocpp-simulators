@@ -86,7 +86,11 @@ class StartTransactionOcppMessage extends OcppOutgoing<
             meterValue: [
               {
                 timestamp: new Date().toISOString(),
-                sampledValue: sampledValues(vcp, transactionState.meterValue),
+                sampledValue: sampledValues(
+                  vcp,
+                  result.payload.transactionId,
+                  transactionState.meterValue,
+                ),
               },
             ],
           }),

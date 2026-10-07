@@ -3,12 +3,16 @@ import type { VCP } from "./vcp";
 
 const METER_VALUES_INTERVAL_SEC = 15;
 
+// The legacy fixed synthetic rate (no charging power set): 10 Wh per second,
+// i.e. 36 kW. What the production fleet runs at.
+export const LEGACY_RATE_W = 36_000;
+
 // Periodic MeterValues are sent for every ongoing transaction. Set
 // DISABLE_METER_VALUES=true to stop sending them - useful when they only add
 // noise, or when the values are driven by admin commands instead.
 const METER_VALUES_DISABLED = process.env.DISABLE_METER_VALUES === "true";
 
-type TransactionId = string | number;
+export type TransactionId = string | number;
 
 interface TransactionState {
   startedAt: Date;
@@ -22,6 +26,27 @@ interface TransactionState {
   // energy register stays monotonic when the charging speed is changed mid-session.
   baseWh: number;
   baseTime: number;
+  // The connector reports SuspendedEV/SuspendedEVSE: no energy flows, so the
+  // register holds still until the connector reports Charging again.
+  paused: boolean;
+}
+
+// A simulated EV battery on one connector (admin /soc). The session's energy
+// fills it from startPercent, and once it is full the car stops drawing: the
+// register holds at the battery's room and the power drops to 0.
+export interface SocConfig {
+  batteryWh: number;
+  startPercent: number;
+}
+
+// One transaction's live reading, as MeterValues and the admin API report it.
+export interface MeterSnapshot {
+  meterWh: number;
+  powerW: number;
+  // null when no battery is simulated on the connector.
+  socPercent: number | null;
+  full: boolean;
+  paused: boolean;
 }
 
 interface StartTransactionProps {
@@ -63,6 +88,9 @@ export class TransactionManager {
   // from DISABLE_METER_VALUES and can be flipped at runtime (admin /meter).
   autoMeterValues = !METER_VALUES_DISABLED;
 
+  // Simulated batteries by connector id. Sticky across sessions until cleared.
+  private socConfigs = new Map<number, SocConfig>();
+
   // Rebase every active transaction to its current reading, then switch power,
   // so changing speed never makes the energy register jump backwards.
   setChargingPowerW(watts: number | null): void {
@@ -71,6 +99,82 @@ export class TransactionManager {
       transaction.baseTime = Date.now();
     }
     this.chargingPowerW = watts;
+  }
+
+  getSocConfig(connectorId: number): SocConfig | null {
+    return this.socConfigs.get(connectorId) ?? null;
+  }
+
+  // Set or clear the battery on a connector. The running transaction is
+  // rebased first so the register never moves backwards when the room shrinks.
+  setSocConfig(connectorId: number, config: SocConfig | null): void {
+    const transaction = this.onConnector(connectorId);
+    if (transaction) {
+      this.rebase(transaction);
+    }
+    if (config) {
+      this.socConfigs.set(connectorId, config);
+    } else {
+      this.socConfigs.delete(connectorId);
+    }
+  }
+
+  // Hold or release the energy flow on a connector (its status went to
+  // Suspended* or back to Charging). No-op without a transaction.
+  setPaused(connectorId: number, paused: boolean): void {
+    const transaction = this.onConnector(connectorId);
+    if (!transaction || transaction.paused === paused) {
+      return;
+    }
+    this.rebase(transaction);
+    transaction.paused = paused;
+  }
+
+  onConnector(connectorId: number) {
+    return Array.from(this.transactions.values()).find(
+      (candidate) => candidate.connectorId === connectorId,
+    );
+  }
+
+  private rebase(transaction: TransactionState): void {
+    transaction.baseWh = this.getMeterValue(transaction.transactionId);
+    transaction.baseTime = Date.now();
+  }
+
+  // The energy a connector's battery still takes, or null without a battery.
+  private roomWh(connectorId: number): number | null {
+    const config = this.socConfigs.get(connectorId);
+    if (!config) {
+      return null;
+    }
+    return Math.max(0, ((100 - config.startPercent) / 100) * config.batteryWh);
+  }
+
+  snapshot(transactionId: TransactionId): MeterSnapshot | null {
+    const transaction = this.transactions.get(transactionId);
+    if (!transaction) {
+      return null;
+    }
+    const meterWh = this.getMeterValue(transactionId);
+    const room = this.roomWh(transaction.connectorId);
+    const full = room !== null && meterWh >= room - 0.001;
+    const config = this.socConfigs.get(transaction.connectorId);
+    const socPercent = config
+      ? full
+        ? 100
+        : Math.min(
+            100,
+            config.startPercent + (meterWh / config.batteryWh) * 100,
+          )
+      : null;
+    return {
+      meterWh,
+      powerW:
+        transaction.paused || full ? 0 : (this.chargingPowerW ?? LEGACY_RATE_W),
+      socPercent,
+      full,
+      paused: transaction.paused,
+    };
   }
 
   // Change the MeterValues report cadence. null restores the default 15 s.
@@ -208,6 +312,7 @@ export class TransactionManager {
       meterValuesCallback: startTransactionProps.meterValuesCallback,
       baseWh: 0,
       baseTime: Date.now(),
+      paused: false,
     });
   }
 
@@ -235,12 +340,19 @@ export class TransactionManager {
     if (!transaction) {
       return 0;
     }
-    if (this.chargingPowerW == null) {
-      // Legacy fixed synthetic rate (production fleet).
-      return (new Date().getTime() - transaction.startedAt.getTime()) / 100;
-    }
-    // Power-based: accumulated Wh since the last rebase + power * elapsed hours.
+    // Accumulated Wh since the last rebase + power * elapsed hours. With no
+    // charging power set this is the legacy fixed rate, the same reading the
+    // old (now - startedAt) / 100 gave, since a session starts at baseWh 0.
+    const powerW = transaction.paused
+      ? 0
+      : (this.chargingPowerW ?? LEGACY_RATE_W);
     const elapsedHours = (Date.now() - transaction.baseTime) / 3_600_000;
-    return transaction.baseWh + elapsedHours * this.chargingPowerW;
+    const reading = transaction.baseWh + elapsedHours * powerW;
+    const room = this.roomWh(transaction.connectorId);
+    // A full battery takes nothing more; never below the last rebase, so a
+    // battery made smaller mid-session holds the register instead of rolling it back.
+    return room === null
+      ? reading
+      : Math.max(transaction.baseWh, Math.min(reading, room));
   }
 }
