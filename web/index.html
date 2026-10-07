@@ -446,7 +446,7 @@ details[open].drawer summary::after{content:"▾"}
 const STATUSES=["Available","Preparing","Charging","SuspendedEV","SuspendedEVSE","Finishing","Reserved","Unavailable","Faulted"];
 const ERRS=["NoError","ConnectorLockFailure","EVCommunicationError","GroundFailure","HighTemperature","InternalError","LocalListConflict","OtherError","OverCurrentFailure","OverVoltage","PowerMeterFailure","PowerSwitchFailure","ReaderFailure","ResetFailure","UnderVoltage","WeakSignal"];
 const STOP_REASONS=["Local","Remote","EVDisconnected","PowerLoss","HardReset","EmergencyStop","DeAuthorized","Other"];
-const SPEEDS=[["0","Hold 0 kW"],["3.7","3.7 kW"],["7.4","7.4 kW"],["11","11 kW"],["22","22 kW"],["50","50 kW"],["default","default"]];
+const SPEEDS=[["0","Hold 0 kW"],["3.7","3.7 kW"],["7.4","7.4 kW"],["11","11 kW"],["22","22 kW"],["50","50 kW"]];
 const SUB={
   Available:"Nothing plugged in. Waiting for a car or a remote start.",
   Preparing:"Cable plugged in. Authorize and start, or wait for a RemoteStartTransaction.",
@@ -632,7 +632,7 @@ function buildCard(s,c){
   const r=k=>el.querySelector(`[data-r="${k}"]`);
   r("force").onclick=()=>exec(s.id,"StatusNotification",{connectorId:c,errorCode:r("ferr").value,status:r("fst").value});
   if(test){
-    r("speed").querySelectorAll("button").forEach(b=>b.onclick=()=>{const v=b.dataset.v;simPost(s.id,"charging-power",{kw:v==="default"?null:+v},v==="default"?"Charger power back to the default rate":`Charger power ${v} kW`);});
+    r("speed").querySelectorAll("button").forEach(b=>b.onclick=()=>{const v=b.dataset.v;simPost(s.id,"charging-power",{kw:+v},`Charger power ${v} kW`);});
     r("auto").onchange=e=>{const v=parseFloat(e.target.value);simPost(s.id,"charge-target",{kwh:v>0?v:null},v>0?`Stops itself at ${v} kWh`:"Auto-stop cleared");};
     const socSend=()=>{const on=r("socOn").checked;simPost(s.id,"soc",on?{connectorId:c,enabled:true,batteryKwh:Math.max(1,+r("socCap").value||60),startPercent:Math.min(100,Math.max(0,+r("socStart").value||0))}:{connectorId:c,enabled:false},
       on?`Connector ${c}: ${r("socCap").value} kWh battery from ${r("socStart").value}%`:`Connector ${c}: battery simulation off`);};
@@ -712,7 +712,7 @@ function updateStation(s){
     const al=k.r("alert");const fails=st?st.consecutiveFailures:0;al.hidden=!(fails>=(txSettings?.failureAlertThreshold||5));
     al.textContent=`Scheduler: ${fails} failed start attempts in a row. Is the admin API down?`;
     if(s.isTestCharger){
-      const cp=s.chargingPower||{};const kw=cp.kw;seg(k.r("speed"),kw==null?"default":String(kw));
+      const cp=s.chargingPower||{};const kw=cp.kw;seg(k.r("speed"),kw);
       const ai=k.r("auto");if(document.activeElement!==ai)ai.value=target??"";
       const on=k.r("socOn");if(document.activeElement!==on)on.checked=!!soc;k.r("socF").hidden=!on.checked;
       if(soc){if(document.activeElement!==k.r("socCap"))k.r("socCap").value=soc.batteryKwh;if(document.activeElement!==k.r("socStart"))k.r("socStart").value=soc.startPercent;}
