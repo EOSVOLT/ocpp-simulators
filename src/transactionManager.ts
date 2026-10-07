@@ -72,11 +72,11 @@ export class TransactionManager {
     }
   > = new Map();
 
-  // Configurable charging power in watts. null -> legacy behaviour (a fixed
-  // synthetic rate), which is what the production fleet uses. Set via the admin
-  // /charging-power endpoint (test chargers) to control how fast the energy
-  // register climbs, and therefore the MeterValues readings sent to the CSMS.
-  chargingPowerW: number | null = null;
+  // Configurable charging power in watts, 22 kW unless changed. null -> legacy
+  // behaviour (the fixed 36 kW synthetic rate). Set via the admin
+  // /charging-power endpoint to control how fast the energy register climbs,
+  // and therefore the MeterValues readings sent to the CSMS.
+  chargingPowerW: number | null = 22_000;
 
   // How often each transaction pushes a MeterValues report to the CSMS.
   // Defaults to the legacy 15 s cadence; test chargers can crank this down (via
