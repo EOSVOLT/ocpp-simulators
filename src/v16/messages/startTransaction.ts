@@ -70,7 +70,7 @@ class StartTransactionOcppMessage extends OcppOutgoing<
             statusNotificationOcppMessage.request({
               connectorId: call.payload.connectorId,
               errorCode: "NoError",
-              status: "Available",
+              status: vcp.statusAfterStop(),
             }),
           );
           // Clear local state + stop the meter timer NOW (don't wait for the

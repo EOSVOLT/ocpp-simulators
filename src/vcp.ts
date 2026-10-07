@@ -168,6 +168,9 @@ const CONNECTOR_ACTIONS = [
 ] as const;
 type ConnectorAction = (typeof CONNECTOR_ACTIONS)[number];
 
+const UNPLUG_MODES = ["auto", "manual"] as const;
+export type UnplugMode = (typeof UNPLUG_MODES)[number];
+
 export class VCP {
   private ws?: WebSocket;
   private adminServer?: ServerType;
@@ -175,6 +178,11 @@ export class VCP {
   private heartbeatIntervalId?: ReturnType<typeof setInterval>;
 
   private isFinishing = false;
+
+  // What a connector reports once its transaction closes. "auto": the driver
+  // unplugs at once (Available). "manual": the cable stays in (Finishing) until
+  // the panel's Unplug, so the CSMS can run idle fees. Runtime-set via /unplug-mode.
+  unplugMode: UnplugMode = "auto";
 
   // Set by the admin /disconnect: the socket is closed on purpose and must stay
   // closed. While it is set neither _onClose nor the error handler hands the
@@ -412,8 +420,7 @@ export class VCP {
         return;
       case "stop":
         stop(options.reason ?? "Local");
-        // The cable is still in.
-        this.sendStatus(connectorId, "Finishing");
+        this.sendStatus(connectorId, this.statusAfterStop());
         return;
       case "suspend":
         if (!transaction) {
@@ -440,6 +447,20 @@ export class VCP {
         this.sendStatus(connectorId, "Available");
         return;
     }
+  }
+
+  setUnplugMode(mode: UnplugMode): void {
+    this.unplugMode = mode;
+    logger.info(
+      mode === "manual"
+        ? "After a stop the cable stays in (Finishing) until Unplug"
+        : "After a stop the driver unplugs at once (Available)",
+    );
+  }
+
+  // The OCPP 1.6 status a connector reports right after its transaction closes.
+  statusAfterStop(): "Available" | "Finishing" {
+    return this.unplugMode === "manual" ? "Finishing" : "Available";
   }
 
   setDelays(delays: { replyMs?: number; actMs?: number }): void {
@@ -481,6 +502,7 @@ export class VCP {
       connected: this.ws?.readyState === WebSocket.OPEN,
       offline: this.manuallyOffline,
       delays: this.getDelayState(),
+      unplugMode: this.unplugMode,
       meter: this.getMeterState(),
       transactions: this.transactionManager.transactions.size,
       connectedSince: this.connectedSince,
@@ -744,6 +766,16 @@ export class VCP {
         (c) => {
           this.setDelays(c.req.valid("json"));
           return c.json(this.getDelayState());
+        },
+      );
+      // Auto or manual unplug after a stop (see unplugMode).
+      adminApi.get("/unplug-mode", (c) => c.json({ mode: this.unplugMode }));
+      adminApi.post(
+        "/unplug-mode",
+        zValidator("json", z.object({ mode: z.enum(UNPLUG_MODES) })),
+        (c) => {
+          this.setUnplugMode(c.req.valid("json").mode);
+          return c.json({ mode: this.unplugMode });
         },
       );
       // The last OCPP frames both ways, plus the CSMS's last reply to one of

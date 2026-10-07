@@ -86,7 +86,8 @@ class RequestStopTransactionOcppIncoming extends OcppIncoming<
       statusNotificationOcppOutgoing.request({
         evseId: transaction.evseId ?? 1,
         connectorId: transaction.connectorId,
-        connectorStatus: "Available",
+        // 2.x has no Finishing: a cable left in is Occupied.
+        connectorStatus: vcp.unplugMode === "manual" ? "Occupied" : "Available",
         timestamp: new Date().toISOString(),
       }),
     );

@@ -199,6 +199,7 @@ interface HealthState {
   // built before it existed.
   offline: boolean | null;
   delays: { replyMs: number; actMs: number } | null;
+  unplugMode: "auto" | "manual" | null;
   meter: { auto: boolean; intervalMs: number; kw: number | null } | null;
   // When the socket opened and the CSMS last answered a Heartbeat/Boot, and
   // every connector's last status, battery and live reading (null from a sim
@@ -215,6 +216,7 @@ async function checkHealth(port: number): Promise<HealthState> {
     connected: null,
     offline: null,
     delays: null,
+    unplugMode: null,
     meter: null,
     connectedSince: null,
     lastHeartbeatAt: null,
@@ -236,6 +238,7 @@ async function checkHealth(port: number): Promise<HealthState> {
         connected: body.connected ?? null,
         offline: body.offline ?? null,
         delays: body.delays ?? null,
+        unplugMode: body.unplugMode ?? null,
         meter: body.meter ?? null,
         connectedSince: body.connectedSince ?? null,
         lastHeartbeatAt: body.lastHeartbeatAt ?? null,
@@ -773,7 +776,7 @@ interface ConnectorState {
   sim: Sim;
   connectorId: number;
   mode: "auto" | "manual";
-  status: "Available" | "Charging";
+  status: "Available" | "Charging" | "Finishing";
   tx?: TxState;
   timer?: ReturnType<typeof setTimeout>;
   sessionCount: number; // auto sessions completed in the current batch
@@ -893,11 +896,19 @@ async function endTransaction(
   });
   releaseKey(tx.idTag);
   state.tx = undefined;
-  state.status = "Available";
+  // A session started from the panel follows the station's unplug mode: in
+  // "manual" the cable stays in (Finishing) until Unplug. Auto-cycles always
+  // free the connector, or the next auto start would land on a busy plug.
+  const unplug =
+    tx.source === "manual"
+      ? await adminGet(state.sim.adminPort, "/unplug-mode")
+      : null;
+  const next = unplug?.mode === "manual" ? "Finishing" : "Available";
+  state.status = next;
   await adminExecute(state.sim, "StatusNotification", {
     connectorId: state.connectorId,
     errorCode: "NoError",
-    status: "Available",
+    status: next,
   });
 }
 
@@ -1081,6 +1092,7 @@ app.get("/api/sims", async (c) => {
         connected: health.connected,
         offline: health.offline,
         delays: health.delays,
+        unplugMode: health.unplugMode,
         meter: health.meter,
         connectedSince: health.connectedSince,
         lastHeartbeatAt: health.lastHeartbeatAt,
@@ -1519,6 +1531,8 @@ app.post("/api/sims/:id/disconnect", (c) =>
 app.post("/api/sims/:id/connect", (c) => proxyAdminPost(c, "/connect", false));
 // The two delay clocks. Body: { replyMs?: number, actMs?: number } (ms).
 app.post("/api/sims/:id/delays", (c) => proxyAdminPost(c, "/delays"));
+// What a connector does after a stop. Body: { mode: "auto" | "manual" }
+app.post("/api/sims/:id/unplug-mode", (c) => proxyAdminPost(c, "/unplug-mode"));
 // Periodic MeterValues on/off and cadence. Body: { auto?: boolean, intervalSeconds?: number }
 app.post("/api/sims/:id/meter", (c) => proxyAdminPost(c, "/meter"));
 // One MeterValues now. Body: { connectorId: number }
