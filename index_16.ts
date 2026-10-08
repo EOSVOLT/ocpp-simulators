@@ -3,7 +3,6 @@ require("dotenv").config();
 import { OcppVersion } from "./src/ocppVersion";
 import { registerVcp } from "./src/close";
 import { bootNotificationOcppMessage } from "./src/v16/messages/bootNotification";
-import { statusNotificationOcppMessage } from "./src/v16/messages/statusNotification";
 import { countFromEnv } from "./src/utils";
 import { VCP } from "./src/vcp";
 import { readWsUrlOverride } from "./src/wsUrlOverride";
@@ -34,14 +33,11 @@ async function main(): Promise<VCP> {
           firmwareVersion: "1.0.0",
         }),
       );
+      // What each connector last reported: Available on a fresh process, but
+      // a session still open across /disconnect + /connect stays Charging.
       for (let connectorId = 1; connectorId <= connectors; connectorId++) {
-        station.send(
-          statusNotificationOcppMessage.request({
-            connectorId,
-            errorCode: "NoError",
-            status: "Available",
-          }),
-        );
+        const known = station.knownStatus(connectorId);
+        station.sendStatus(connectorId, known.status, known.errorCode);
       }
     },
   });

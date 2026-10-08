@@ -70,7 +70,7 @@ class StartTransactionOcppMessage extends OcppOutgoing<
             statusNotificationOcppMessage.request({
               connectorId: call.payload.connectorId,
               errorCode: "NoError",
-              status: "Available",
+              status: vcp.statusAfterStop(),
             }),
           );
           // Clear local state + stop the meter timer NOW (don't wait for the
@@ -86,7 +86,11 @@ class StartTransactionOcppMessage extends OcppOutgoing<
             meterValue: [
               {
                 timestamp: new Date().toISOString(),
-                sampledValue: sampledValues(vcp, transactionState.meterValue),
+                sampledValue: sampledValues(
+                  vcp,
+                  result.payload.transactionId,
+                  transactionState.meterValue,
+                ),
               },
             ],
           }),

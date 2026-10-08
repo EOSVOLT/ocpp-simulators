@@ -55,12 +55,39 @@ const generateOCMFData = (input: OCMFInput) => {
   };
 };
 
+// The key pair in cert/ is kept out of the image (.dockerignore), so a container
+// has none: fall back to a throwaway secp256k1 pair, generated once per process,
+// rather than crashing the station on its first remote stop.
+let signingKeys: { privateKey: string; publicKey: Buffer } | null = null;
+
+const loadSigningKeys = () => {
+  if (signingKeys) {
+    return signingKeys;
+  }
+  const privatePath = path.resolve("./cert/vcp.pem");
+  const publicPath = path.resolve("./cert/vcp.pub");
+  if (fs.existsSync(privatePath) && fs.existsSync(publicPath)) {
+    signingKeys = {
+      privateKey: fs.readFileSync(privatePath, "utf8"),
+      publicKey: fs.readFileSync(publicPath),
+    };
+  } else {
+    const pair = crypto.generateKeyPairSync("ec", { namedCurve: "secp256k1" });
+    signingKeys = {
+      privateKey: pair.privateKey.export({ type: "sec1", format: "pem" }).toString(),
+      publicKey: Buffer.from(pair.publicKey.export({ type: "spki", format: "pem" }).toString()),
+    };
+    console.warn("No OCMF key pair in ./cert, signing with an ephemeral one");
+  }
+  return signingKeys;
+};
+
 const generateOCMFSignature = (data: string) => {
   const sign = crypto.createSign("sha256");
   sign.update(data);
   const signature = sign
     .sign({
-      key: fs.readFileSync(path.resolve("./cert/vcp.pem"), "utf8"),
+      key: loadSigningKeys().privateKey,
     })
     .toString("hex");
   return { SA: "ECDSA-secp256k1-SHA256", SD: signature };
@@ -73,5 +100,5 @@ export const generateOCMF = (input: OCMFInput) => {
 };
 
 export const getOCMFPublicKey = () => {
-  return fs.readFileSync(path.resolve("./cert/vcp.pub"));
+  return loadSigningKeys().publicKey;
 };

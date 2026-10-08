@@ -22,7 +22,8 @@ import {
   validateOcppOutgoingRequest,
   validateOcppOutgoingResponse,
 } from "./schemaValidator";
-import { TransactionManager } from "./transactionManager";
+import { type SocConfig, TransactionManager } from "./transactionManager";
+import { countFromEnv, range } from "./utils";
 import { heartbeatOcppMessage } from "./v16/messages/heartbeat";
 import { close } from "./close";
 import {
@@ -71,6 +72,37 @@ const DEFAULT_FAIL_MODE_MS = 60_000;
 // through the admin /delays endpoint; ACT_DELAY_MS seeds it.
 const DEFAULT_ACT_DELAY_MS = 1000;
 const MAX_DELAY_MS = 600_000;
+
+// How often the station looks for a simulated battery that just filled up (or
+// got room again), so the SuspendedEV report follows within a second instead
+// of waiting for the next MeterValues tick.
+const SOC_WATCH_MS = 1000;
+
+const CONNECTOR_STATUSES = [
+  "Available",
+  "Preparing",
+  "Charging",
+  "SuspendedEVSE",
+  "SuspendedEV",
+  "Finishing",
+  "Reserved",
+  "Unavailable",
+  "Faulted",
+] as const;
+
+const STOP_REASONS = [
+  "DeAuthorized",
+  "EmergencyStop",
+  "EVDisconnected",
+  "HardReset",
+  "Local",
+  "Other",
+  "PowerLoss",
+  "Reboot",
+  "Remote",
+  "SoftReset",
+  "UnlockCommand",
+] as const;
 
 // The last N OCPP frames in and out, kept for the admin /frames endpoint so a
 // panel can show the wire without tailing a log file.
@@ -125,6 +157,20 @@ type CallOutcome =
   | { status: "error"; errorCode: string; errorDescription: string }
   | { status: "timeout" };
 
+const CONNECTOR_ACTIONS = [
+  "plug_in",
+  "authorize",
+  "start",
+  "stop",
+  "suspend",
+  "resume",
+  "unplug",
+] as const;
+type ConnectorAction = (typeof CONNECTOR_ACTIONS)[number];
+
+const UNPLUG_MODES = ["auto", "manual"] as const;
+export type UnplugMode = (typeof UNPLUG_MODES)[number];
+
 export class VCP {
   private ws?: WebSocket;
   private adminServer?: ServerType;
@@ -132,6 +178,11 @@ export class VCP {
   private heartbeatIntervalId?: ReturnType<typeof setInterval>;
 
   private isFinishing = false;
+
+  // What a connector reports once its transaction closes. "auto": the driver
+  // unplugs at once (Available). "manual": the cable stays in (Finishing) until
+  // the panel's Unplug, so the CSMS can run idle fees. Runtime-set via /unplug-mode.
+  unplugMode: UnplugMode = "auto";
 
   // Set by the admin /disconnect: the socket is closed on purpose and must stay
   // closed. While it is set neither _onClose nor the error handler hands the
@@ -185,6 +236,237 @@ export class VCP {
   private frames: Frame[] = [];
   lastReply: LastReply | null = null;
 
+  // When the current socket opened, and when the CSMS last answered a
+  // Heartbeat or BootNotification. Both null until it happens.
+  connectedSince: string | null = null;
+  lastHeartbeatAt: string | null = null;
+
+  // The last status each connector reported, recorded in send() so every path
+  // (remote start, faults, admin commands, a raw /execute) keeps it right.
+  private connectorStatus = new Map<
+    number,
+    { status: string; errorCode: string; at: string }
+  >();
+  // Connectors this station suspended itself because the battery filled up,
+  // so it knows to report Charging again if the battery gets room.
+  private suspendedFull = new Set<number>();
+  private socWatchTimer?: ReturnType<typeof setInterval>;
+
+  // The status the station last reported for a connector, for a boot that
+  // must re-announce what is going on instead of claiming Available mid-session.
+  knownStatus(connectorId: number): { status: string; errorCode: string } {
+    return (
+      this.connectorStatus.get(connectorId) ?? {
+        status: "Available",
+        errorCode: "NoError",
+      }
+    );
+  }
+
+  getConnectorStates() {
+    return range(countFromEnv("CONNECTORS")).map((connectorId) => {
+      const known = this.connectorStatus.get(connectorId);
+      const transaction = this.transactionManager.onConnector(connectorId);
+      const snapshot = transaction
+        ? this.transactionManager.snapshot(transaction.transactionId)
+        : null;
+      const soc = this.transactionManager.getSocConfig(connectorId);
+      return {
+        connectorId,
+        status: known?.status ?? null,
+        errorCode: known?.errorCode ?? null,
+        statusAt: known?.at ?? null,
+        soc: soc
+          ? {
+              batteryKwh: soc.batteryWh / 1000,
+              startPercent: soc.startPercent,
+              curve: soc.curve,
+            }
+          : null,
+        transaction:
+          transaction && snapshot
+            ? {
+                transactionId: transaction.transactionId,
+                idTag: transaction.idTag,
+                startedAt: transaction.startedAt.toISOString(),
+                ...snapshot,
+              }
+            : null,
+      };
+    });
+  }
+
+  // Simulate (or stop simulating) an EV battery on a connector.
+  setSoc(connectorId: number, config: SocConfig | null): void {
+    this.transactionManager.setSocConfig(connectorId, config);
+    logger.info(
+      config
+        ? `Connector ${connectorId}: simulating a ${config.batteryWh / 1000} kWh battery from ${config.startPercent}%${config.curve ? ", tapering with SoC" : ""}`
+        : `Connector ${connectorId}: battery simulation off`,
+    );
+    this.checkBatteries();
+  }
+
+  // A full battery stops drawing: the last reading goes out and the connector
+  // reports SuspendedEV, the transaction stays open until it is stopped. A
+  // battery that gets room again (made bigger, started lower) resumes.
+  private checkBatteries(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    for (const transaction of Array.from(
+      this.transactionManager.transactions.values(),
+    )) {
+      const { connectorId, transactionId } = transaction;
+      if (!this.transactionManager.getSocConfig(connectorId)) {
+        continue;
+      }
+      const snapshot = this.transactionManager.snapshot(transactionId);
+      const status = this.connectorStatus.get(connectorId)?.status;
+      if (snapshot?.full && status === "Charging") {
+        logger.info(
+          `Connector ${connectorId}: battery full at ${Math.round(snapshot.meterWh)} Wh, car stopped drawing`,
+        );
+        this.suspendedFull.add(connectorId);
+        this.transactionManager.tick(connectorId);
+        this.sendStatus(connectorId, "SuspendedEV");
+      } else if (
+        snapshot &&
+        !snapshot.full &&
+        status === "SuspendedEV" &&
+        this.suspendedFull.has(connectorId)
+      ) {
+        logger.info(`Connector ${connectorId}: battery has room again`);
+        this.suspendedFull.delete(connectorId);
+        this.sendStatus(connectorId, "Charging");
+      }
+    }
+  }
+
+  sendStatus(connectorId: number, status: string, errorCode = "NoError") {
+    this.send(call("StatusNotification", { connectorId, errorCode, status }));
+  }
+
+  // What a connector status means for the energy flow, applied as it goes out.
+  private recordStatus(payload: {
+    connectorId?: number;
+    status?: string;
+    errorCode?: string;
+  }): void {
+    const { connectorId, status } = payload;
+    if (!connectorId || !status) {
+      return;
+    }
+    this.connectorStatus.set(connectorId, {
+      status,
+      errorCode: payload.errorCode ?? "NoError",
+      at: new Date().toISOString(),
+    });
+    if (status !== "SuspendedEV") {
+      this.suspendedFull.delete(connectorId);
+    }
+    if (status === "Charging") {
+      this.transactionManager.setPaused(connectorId, false);
+    } else if (status === "SuspendedEV" || status === "SuspendedEVSE") {
+      this.transactionManager.setPaused(connectorId, true);
+    }
+  }
+
+  // The panel's connector buttons. Each one is what a real charger does when
+  // a driver plugs in, badges, unplugs..., including the status that follows.
+  // Throws (with a message for the caller) when the action does not fit.
+  connectorAction(
+    connectorId: number,
+    action: ConnectorAction,
+    options: { idTag?: string; reason?: (typeof STOP_REASONS)[number] } = {},
+  ): void {
+    const transaction = this.transactionManager.onConnector(connectorId);
+    const stop = (reason: (typeof STOP_REASONS)[number]) => {
+      if (!transaction) {
+        throw new Error(`connector ${connectorId} has no transaction`);
+      }
+      this.send(
+        call("StopTransaction", {
+          transactionId: Number(transaction.transactionId),
+          idTag: transaction.idTag,
+          meterStop: Math.floor(
+            this.transactionManager.getMeterValue(transaction.transactionId),
+          ),
+          reason,
+          timestamp: new Date().toISOString(),
+        }),
+      );
+    };
+    switch (action) {
+      case "plug_in":
+        this.sendStatus(connectorId, "Preparing");
+        return;
+      case "authorize":
+        this.send(call("Authorize", { idTag: options.idTag ?? "__TOKEN__" }));
+        return;
+      case "start":
+        if (transaction) {
+          throw new Error(
+            `connector ${connectorId} already has transaction ${transaction.transactionId}`,
+          );
+        }
+        // The transaction itself starts when the CSMS answers with its id
+        // (StartTransaction's resHandler), like a RemoteStart.
+        this.send(
+          call("StartTransaction", {
+            connectorId,
+            idTag: options.idTag ?? "__TOKEN__",
+            meterStart: 0,
+            timestamp: new Date().toISOString(),
+          }),
+        );
+        this.sendStatus(connectorId, "Charging");
+        return;
+      case "stop":
+        stop(options.reason ?? "Local");
+        this.sendStatus(connectorId, this.statusAfterStop());
+        return;
+      case "suspend":
+        if (!transaction) {
+          throw new Error(`connector ${connectorId} has no transaction`);
+        }
+        this.sendStatus(connectorId, "SuspendedEV");
+        return;
+      case "resume": {
+        if (!transaction) {
+          throw new Error(`connector ${connectorId} has no transaction`);
+        }
+        if (this.transactionManager.snapshot(transaction.transactionId)?.full) {
+          throw new Error(
+            `connector ${connectorId}: the battery is full, the car draws nothing`,
+          );
+        }
+        this.sendStatus(connectorId, "Charging");
+        return;
+      }
+      case "unplug":
+        if (transaction) {
+          stop(options.reason ?? "EVDisconnected");
+        }
+        this.sendStatus(connectorId, "Available");
+        return;
+    }
+  }
+
+  setUnplugMode(mode: UnplugMode): void {
+    this.unplugMode = mode;
+    logger.info(
+      mode === "manual"
+        ? "After a stop the cable stays in (Finishing) until Unplug"
+        : "After a stop the driver unplugs at once (Available)",
+    );
+  }
+
+  // The OCPP 1.6 status a connector reports right after its transaction closes.
+  statusAfterStop(): "Available" | "Finishing" {
+    return this.unplugMode === "manual" ? "Finishing" : "Available";
+  }
+
   setDelays(delays: { replyMs?: number; actMs?: number }): void {
     if (delays.replyMs !== undefined) {
       this.replyDelayMs = delays.replyMs;
@@ -224,8 +506,12 @@ export class VCP {
       connected: this.ws?.readyState === WebSocket.OPEN,
       offline: this.manuallyOffline,
       delays: this.getDelayState(),
+      unplugMode: this.unplugMode,
       meter: this.getMeterState(),
       transactions: this.transactionManager.transactions.size,
+      connectedSince: this.connectedSince,
+      lastHeartbeatAt: this.lastHeartbeatAt,
+      connectors: this.getConnectorStates(),
     };
   }
 
@@ -393,6 +679,7 @@ export class VCP {
     const w = this.transactionManager.chargingPowerW;
     return {
       kw: w == null ? null : w / 1000,
+      fluctuate: this.transactionManager.fluctuate,
       intervalMs: this.transactionManager.meterIntervalMs,
     };
   }
@@ -418,6 +705,62 @@ export class VCP {
     if (vcpOptions.adminPort) {
       const adminApi = new Hono();
       adminApi.get("/health", (c) => c.json(this.getHealthState()));
+      // Every connector: its last reported status, simulated battery and live
+      // transaction reading.
+      adminApi.get("/connectors", (c) => c.json(this.getConnectorStates()));
+      // Simulate an EV battery on a connector: SoC goes into MeterValues and
+      // the car stops drawing at 100 % (SuspendedEV). enabled=false clears it.
+      adminApi.post(
+        "/soc",
+        zValidator(
+          "json",
+          z.object({
+            connectorId: z.number().int().positive().default(1),
+            enabled: z.boolean(),
+            batteryKwh: z.number().positive().max(1000).default(60),
+            startPercent: z.number().min(0).max(100).default(20),
+            // Taper the power as the battery fills (see chargeCurve).
+            curve: z.boolean().default(false),
+          }),
+        ),
+        (c) => {
+          const { connectorId, enabled, batteryKwh, startPercent, curve } =
+            c.req.valid("json");
+          this.setSoc(
+            connectorId,
+            enabled
+              ? { batteryWh: batteryKwh * 1000, startPercent, curve }
+              : null,
+          );
+          return c.json(this.getConnectorStates());
+        },
+      );
+      // Driver-side actions on one connector (plug in, badge, start, stop,
+      // suspend, resume, unplug), each with the status reports that follow.
+      adminApi.post(
+        "/connector-action",
+        zValidator(
+          "json",
+          z.object({
+            connectorId: z.number().int().positive().default(1),
+            action: z.enum(CONNECTOR_ACTIONS),
+            idTag: z.string().min(1).max(36).optional(),
+            reason: z.enum(STOP_REASONS).optional(),
+          }),
+        ),
+        (c) => {
+          const { connectorId, action, idTag, reason } = c.req.valid("json");
+          try {
+            this.connectorAction(connectorId, action, { idTag, reason });
+          } catch (err) {
+            return c.json(
+              { error: err instanceof Error ? err.message : String(err) },
+              409,
+            );
+          }
+          return c.json(this.getConnectorStates());
+        },
+      );
       // The two delay clocks. Either field may be omitted to leave it alone.
       adminApi.get("/delays", (c) => c.json(this.getDelayState()));
       adminApi.post(
@@ -432,6 +775,16 @@ export class VCP {
         (c) => {
           this.setDelays(c.req.valid("json"));
           return c.json(this.getDelayState());
+        },
+      );
+      // Auto or manual unplug after a stop (see unplugMode).
+      adminApi.get("/unplug-mode", (c) => c.json({ mode: this.unplugMode }));
+      adminApi.post(
+        "/unplug-mode",
+        zValidator("json", z.object({ mode: z.enum(UNPLUG_MODES) })),
+        (c) => {
+          this.setUnplugMode(c.req.valid("json").mode);
+          return c.json({ mode: this.unplugMode });
         },
       );
       // The last OCPP frames both ways, plus the CSMS's last reply to one of
@@ -600,7 +953,8 @@ export class VCP {
       );
       // Charging speed (kW) + MeterValues report cadence (intervalMs).
       // kw=null restores the legacy fixed rate; intervalMs=null (or absent)
-      // restores the default 15 s cadence.
+      // restores the default 15 s cadence. fluctuate=true draws a varying
+      // power always under kw; absent leaves it as it is.
       adminApi.get("/charging-power", (c) =>
         c.json(this.getChargingPowerState()),
       );
@@ -609,14 +963,33 @@ export class VCP {
         zValidator(
           "json",
           z.object({
-            kw: z.number().nullable(),
+            kw: z.number().nullable().optional(),
+            fluctuate: z.boolean().optional(),
             intervalMs: z.number().positive().nullable().optional(),
           }),
         ),
         (c) => {
-          const { kw, intervalMs } = c.req.valid("json");
-          this.setChargingPowerKw(kw);
-          this.transactionManager.setMeterIntervalMs(intervalMs ?? null);
+          const { kw, fluctuate, intervalMs } = c.req.valid("json");
+          if (kw !== undefined) {
+            this.setChargingPowerKw(kw);
+          }
+          if (fluctuate !== undefined) {
+            this.transactionManager.setFluctuate(fluctuate);
+            logger.info(
+              `Charging power ${fluctuate ? "fluctuates under the set power" : "steady"}`,
+            );
+          }
+          // Only touch the cadence when the caller says so: a speed change
+          // alone must not reset an interval set through /meter.
+          if (intervalMs !== undefined) {
+            this.transactionManager.setMeterIntervalMs(intervalMs);
+            this.configuration.set(
+              "MeterValueSampleInterval",
+              String(
+                Math.round(this.transactionManager.meterIntervalMs / 1000),
+              ),
+            );
+          }
           return c.json(this.getChargingPowerState());
         },
       );
@@ -718,6 +1091,14 @@ export class VCP {
         port: vcpOptions.adminPort,
       });
     }
+    this.socWatchTimer = setInterval(() => {
+      try {
+        this.checkBatteries();
+      } catch (err) {
+        logger.warn(`Battery check failed: ${String(err)}`);
+      }
+    }, SOC_WATCH_MS);
+    this.socWatchTimer.unref();
   }
 
   async connect(): Promise<void> {
@@ -739,6 +1120,7 @@ export class VCP {
       });
 
       this.ws.on("open", () => {
+        this.connectedSince = new Date().toISOString();
         resolve();
         this.runBoot();
       });
@@ -783,6 +1165,7 @@ export class VCP {
   // transactions stay in memory. Idempotent.
   disconnect(): void {
     this.manuallyOffline = true;
+    this.connectedSince = null;
     this.stopTimers();
     if (!this.ws) {
       return;
@@ -872,6 +1255,9 @@ export class VCP {
       JSON.parse(JSON.stringify(resolvedCall.payload)),
     );
     this.ws.send(jsonMessage);
+    if (resolvedCall.action === "StatusNotification") {
+      this.recordStatus(resolvedCall.payload ?? {});
+    }
     // A real charger stops metering the moment it ends a session, whether or
     // not the CSMS ever acks the StopTransaction. Waiting for the .conf (the
     // resHandler) left transactions metering forever when staging stopped
@@ -963,6 +1349,7 @@ export class VCP {
       clearInterval(this.heartbeatIntervalId);
       this.heartbeatIntervalId = undefined;
     }
+    clearInterval(this.socWatchTimer);
     this.ws.close();
     this.ws = undefined;
     if (this.adminServer) {
@@ -1052,6 +1439,12 @@ export class VCP {
           `Received CallResult for unknown messageId=${messageId}`,
         );
       }
+      if (
+        enqueuedCall.action === "Heartbeat" ||
+        enqueuedCall.action === "BootNotification"
+      ) {
+        this.lastHeartbeatAt = new Date().toISOString();
+      }
       this.lastReply = {
         kind: "result",
         action: enqueuedCall.action,
@@ -1129,6 +1522,7 @@ export class VCP {
   }
 
   private _onClose(code: number, reason: string) {
+    this.connectedSince = null;
     if (this.isFinishing || this.manuallyOffline) {
       return;
     }
