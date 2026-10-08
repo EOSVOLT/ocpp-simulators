@@ -12,10 +12,8 @@ import type { VCP } from "../vcp";
 export const PHASE_SAMPLES_ENABLED =
   process.env.METER_PHASE_SAMPLES !== "false";
 
-// Without a battery simulated on the connector (admin /soc), SoC is reported
-// as if a 60 kWh battery started the session at 20 %, as it always was.
-const BATTERY_WH = 60_000;
-const SOC_START_PERCENT = 20;
+// SoC goes out only while a battery is simulated on the connector (admin
+// /soc); a charger with no battery to read reports none.
 const PHASE_VOLTAGE = 230;
 
 // The subset of the MeterValueSchema sampled value this station produces,
@@ -43,9 +41,8 @@ export const sampledValues = (
 ): SampledValues => {
   const snapshot = vcp.transactionManager.snapshot(transactionId);
   const common = { context: "Sample.Periodic", format: "Raw" } as const;
-  // A simulated battery's SoC is reported whatever the sample set, since it
-  // was asked for; the legacy fixed curve only rides along with the phases.
-  const simulatedSoc: SampledValue[] =
+  // Floored so 100 means full, never 99.5.
+  const stateOfCharge: SampledValue[] =
     snapshot?.socPercent != null
       ? [
           {
@@ -64,18 +61,11 @@ export const sampledValues = (
         measurand: "Energy.Active.Import.Register",
         unit: "kWh",
       },
-      ...simulatedSoc,
+      ...stateOfCharge,
     ];
   }
   const powerW =
     snapshot?.powerW ?? vcp.transactionManager.chargingPowerW ?? LEGACY_RATE_W;
-  // Floored for a simulated battery so 100 means full, never 99.5.
-  const soc =
-    snapshot?.socPercent != null
-      ? Math.floor(snapshot.socPercent)
-      : Math.round(
-          Math.min(100, SOC_START_PERCENT + (meterValueWh / BATTERY_WH) * 100),
-        );
   const perPhaseA = Math.round((powerW / 3 / PHASE_VOLTAGE) * 10) / 10;
   const energy: SampledValue = {
     value: String(Math.round(meterValueWh)),
@@ -91,13 +81,6 @@ export const sampledValues = (
     location: "Outlet",
     unit: "W",
   };
-  const stateOfCharge: SampledValue = {
-    value: String(soc),
-    ...common,
-    measurand: "SoC",
-    location: "EV",
-    unit: "Percent",
-  };
   const phases: SampledValue[] = (["L1", "L2", "L3"] as const).map((phase) => ({
     value: String(perPhaseA),
     ...common,
@@ -106,5 +89,5 @@ export const sampledValues = (
     location: "Outlet",
     unit: "A",
   }));
-  return [energy, power, stateOfCharge, ...phases];
+  return [energy, power, ...stateOfCharge, ...phases];
 };
