@@ -33,7 +33,12 @@ body{background:var(--bg);color:var(--fg);font:14px/1.45 var(--sans);margin:0;pa
 .app{display:grid;grid-template-columns:250px minmax(0,1fr);min-height:100vh}
 @media (max-width:1100px){.app{grid-template-columns:1fr}}
 .side{border-right:1px solid var(--line);background:var(--panel);padding:14px 14px 20px;display:flex;flex-direction:column;gap:14px;position:sticky;top:env(safe-area-inset-top,0px);height:100vh;overflow:auto}
-@media (max-width:1100px){.side{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}}
+@media (max-width:1100px){
+  .side{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}
+  .side>*{grid-column:1 / -1}
+  .side>.brand{grid-column:1}
+  .side>.nav{grid-column:2}
+}
 .side .brand{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .side .brand b{font-size:15px;font-weight:600}
 .pill{font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px;border:1px solid var(--line-strong);color:var(--muted)}
@@ -44,6 +49,10 @@ body{background:var(--bg);color:var(--fg);font:14px/1.45 var(--sans);margin:0;pa
 .nav a .id{flex:1;font-weight:500} .nav a .cs{font-size:11px;color:var(--muted)}
 .nav a .dot{width:7px;height:7px;box-shadow:none}
 .side .addbtn{width:100%;text-align:left}
+.sthd{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:6px}
+.sthd .note{font-size:11px}
+.stq{width:100%;margin-bottom:6px;padding:5px 8px;font-size:12.5px}
+.nav mark{background:transparent;color:var(--accent);font-weight:600}
 .addform{display:flex;flex-direction:column;gap:8px;background:var(--panel-2);border-radius:8px;padding:10px}
 .addform label{font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:3px}
 .addform input{width:100%}
@@ -112,16 +121,50 @@ input,select{background:var(--bg);border:1px solid var(--line-strong);border-rad
 .st-Faulted,.st-Unavailable{color:var(--bad);border-color:var(--bad)}
 .meters{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-top:14px}
 .socf{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
-.meter{background:var(--panel-2);border-radius:8px;padding:8px 10px}
+.meter{background:var(--panel-2);border-radius:8px;padding:8px 10px;border:1px solid transparent}
 .meter .v{font-size:20px;font-weight:600;font-family:var(--mono)}
 .meter .l{font-size:11px;color:var(--muted);margin-top:2px}
+/* the kWh tile doubles as the meter tick, live only while Charging */
+button.meter{display:block;width:100%;text-align:left;color:inherit;font:inherit;cursor:default;min-width:0}
+button.meter:hover{border-color:transparent}
+button.meter .send{display:none;color:var(--warn)}
+button.meter.live{cursor:pointer;border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+button.meter.live:hover{background:color-mix(in srgb,var(--warn) 10%,var(--panel-2));border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+button.meter.live .v{color:var(--warn)}
+button.meter.live .send{display:inline}
 .bar{height:4px;background:var(--line);border-radius:2px;margin-top:8px;overflow:hidden}
 .bar i{display:block;height:100%;background:var(--accent);width:0;transition:width .4s}
-.actions{display:flex;flex-wrap:nowrap;gap:8px;margin-top:14px;align-items:center;overflow-x:auto;padding-bottom:2px}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;align-items:center}
 .actions>button,.actions>select{flex:0 0 auto;white-space:nowrap}
-.actions>input{flex:1 1 120px;min-width:90px}
+.actions>input{flex:1 1 120px;min-width:110px;max-width:220px}
+.actions.prep,.actions.chg{flex-wrap:nowrap}
+/* narrow cards: two column grids, measured on the card body */
+.bd.conn{container-type:inline-size}
+@container (width < 450px){
+  .actions.prep{display:grid;grid-template-columns:1fr 1fr}
+  .actions.prep>*{width:100%;max-width:none;min-width:0;margin-left:0}
+}
+@container (width < 440px){
+  .actions.chg{display:grid;grid-template-columns:1fr 1fr}
+  .actions.chg>*{width:100%;margin-left:0}
+  .actions.chg .split{grid-column:1 / -1;display:flex}
+  .actions.chg .split .main{flex:1}
+}
+/* Stop transaction: arrow for the reason menu, main button stops with Local */
+.split{position:relative;display:inline-flex;flex:none}
+.split>button{border-radius:0}
+.split .arrow{border-radius:6px 0 0 6px;padding:6px 7px;line-height:0;border-right-color:color-mix(in srgb,var(--accent-ink) 35%,var(--accent))}
+.split .arrow svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.split .main{border-radius:0 6px 6px 0;white-space:nowrap}
+.menu{position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:300px;width:max-content;max-width:calc(100vw - 32px);background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+.menu .mh{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:6px 10px 4px}
+.menu [role=menuitem]{display:flex;width:100%;align-items:baseline;gap:16px;border:0;background:transparent;border-radius:5px;padding:6px 10px;text-align:left;white-space:nowrap;font-size:13px}
+.menu [role=menuitem] span{margin-left:auto;font-size:12px;color:var(--muted)}
+.menu [role=menuitem]:hover,.menu [role=menuitem]:focus-visible{background:var(--panel-2);outline:none;border:0}
 .actions .hint{width:100%;font-size:12px;color:var(--muted)}
 .actions .end{margin-left:auto}
+@container (width < 450px){.actions.prep .end{margin-left:0}}
+@container (width < 440px){.actions.chg .end{margin-left:0}}
 button.danger{background:color-mix(in srgb,var(--bad) 10%,transparent)}
 button.danger:hover{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 20%,transparent)}
 .field{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px}
@@ -133,9 +176,33 @@ button.danger:hover{border-color:var(--bad);background:color-mix(in srgb,var(--b
 @media (max-width:520px){.row.force{flex-wrap:wrap}.row.force button{flex:1 1 100%}}
 .field > label .note{display:block;color:var(--faint);font-size:11px}
 .field .ctl{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;flex:1 1 280px;min-width:0}
+/* a row holding only a toggle keeps it on the label's line */
+.field.tgl .ctl{flex-basis:120px}
+.field.tgl.on .ctl{flex-basis:280px}
 .seg{display:inline-flex;border:1px solid var(--line-strong);border-radius:6px;overflow:hidden;flex-wrap:nowrap;white-space:nowrap;max-width:100%;overflow-x:auto}
 .seg button{border:0;border-radius:0;background:transparent;padding:5px 10px;font-size:13px}
 .seg button + button{border-left:1px solid var(--line-strong)}
+/* slider: header row (label, editable value, unit), full width track, preset marks */
+.sl{display:flex;flex-direction:column}
+.sl-hd{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.sl-hd .lbl{font-size:12px;color:var(--muted)}
+.sl-hd .lbl .note{display:block;color:var(--faint);font-size:11px}
+.sl-v{display:inline-flex;align-items:baseline;gap:4px;flex:none}
+.sl-v input{border:0;border-bottom:1px solid transparent;border-radius:0;background:transparent;padding:0 1px;text-align:right;font:600 15px/1.3 var(--sans);font-variant-numeric:tabular-nums;-moz-appearance:textfield;appearance:textfield}
+.sl-v input::-webkit-inner-spin-button,.sl-v input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.sl-v input:hover,.sl-v input:focus,.sl-v input:focus-visible{border-bottom-color:var(--accent);outline:none}
+.sl-v .unit{font-size:12px;color:var(--muted)}
+.sl input[type=range]{-webkit-appearance:none;appearance:none;display:block;width:100%;height:4px;margin:12px 0 8px;padding:0;border:0;border-radius:2px;cursor:pointer;background:linear-gradient(to right,var(--accent) calc(8px + var(--p,0) * (100% - 16px)),var(--line-strong) 0)}
+.sl input[type=range]:focus-visible{outline:none}
+.sl input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;box-sizing:border-box;width:16px;height:16px;border-radius:50%;background:var(--panel);border:2px solid var(--accent)}
+.sl input[type=range]::-moz-range-thumb{box-sizing:border-box;width:16px;height:16px;border-radius:50%;background:var(--panel);border:2px solid var(--accent)}
+.sl input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 40%,transparent)}
+.sl input[type=range]:focus-visible::-moz-range-thumb{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 40%,transparent)}
+.sl-marks{position:relative;height:16px}
+.sl-marks button{position:absolute;top:0;transform:translateX(-50%);border:0;background:none;padding:0 2px;font:11px/16px var(--mono);color:var(--faint);white-space:nowrap}
+.sl-marks button:first-child,.sl-marks button:last-child{transform:none}
+.sl-marks button:hover{color:var(--fg);border:0}
+.sl-marks button.on{color:var(--accent)}
 .seg button.on{background:var(--accent);color:var(--accent-ink);font-weight:600}
 .seg button:hover{border-color:var(--line-strong)}
 details.more{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
@@ -170,7 +237,7 @@ details[open].drawer summary::after{content:"▾"}
 .toggle{cursor:pointer}
 
 /* timeline */
-.tl{display:flex;flex-direction:column;min-height:560px}
+.tl{display:flex;flex-direction:column;min-height:560px;container:tl / inline-size}
 @media (min-width:981px){
   .strip{position:sticky;top:0;z-index:5}
   .col.right{position:sticky;top:calc(var(--striph,64px) + 16px);height:calc(100vh - var(--striph,64px) - 32px);min-height:360px}
@@ -178,12 +245,24 @@ details[open].drawer summary::after{content:"▾"}
 }
 .tl .hd{flex-wrap:wrap;gap:8px}
 .tl .hd .eyebrow{flex:0 0 calc(92px + 10px + 18px + 10px - 8px)}
-@media (max-width:640px){.tl .hd .eyebrow{flex:0 0 100%}}
 .tl .hd .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;flex:1;min-width:0}
 .tl .hd .filters .lead{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .tl .hd .filters .trail{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-left:auto}
 .tl .hd input[type=text]{width:190px;padding:4px 8px;font-size:13px}
 .tl .hd .toggle{font-size:12px;color:var(--muted)}
+/* narrow timeline: label and icons, then filter and pings, then the kind switch */
+@container tl (width < 640px){
+  .tl .hd{display:grid;grid-template-columns:1fr auto auto auto;gap:8px 6px;align-items:center}
+  .tl .hd .filters,.tl .hd .filters .lead,.tl .hd .filters .trail{display:contents}
+  .tl .hd .eyebrow{grid-area:1 / 1}
+  .tl .hd #bCopyAll{grid-area:1 / 2}
+  .tl .hd #bDownload{grid-area:1 / 3}
+  .tl .hd #bClear{grid-area:1 / 4}
+  .tl .hd #q{grid-area:2 / 1;width:100%;min-width:0}
+  .tl .hd .lead .toggle{grid-area:2 / 2 / 3 / 5;justify-self:end;white-space:nowrap}
+  .tl .hd #segKind{grid-area:3 / 1 / 4 / 5;display:flex;max-width:none}
+  .tl .hd #segKind button{flex:1;text-align:center}
+}
 .log{flex:1;overflow:auto;min-height:0;font-family:var(--mono);font-size:12.5px}
 .ev{display:grid;grid-template-columns:92px 18px minmax(0,1fr) auto 24px;gap:0 10px;padding:6px 14px;border-bottom:1px solid var(--line);align-items:baseline;cursor:pointer}
 .ev:hover{background:var(--panel-2)}
@@ -259,8 +338,23 @@ details[open].drawer summary::after{content:"▾"}
 .strip .ident{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:3px}
 .strip .ident .facts{font-size:12px;gap:2px 12px}
 .strip .ident .facts .url{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+.strip .ident .facts .more{display:contents}
 .strip .acts{flex:none;flex-wrap:nowrap}
-@media (max-width:640px){.strip .ident{flex-basis:100%}.strip .acts{flex-wrap:wrap}}
+.strip .burger{display:none;margin-left:auto}
+@media (max-width:640px){
+  .strip .ident{flex-basis:100%}
+  /* line 1: dot, name, OCPP URL, burger; line 2: the other facts */
+  .strip .ident{flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px 10px}
+  .strip .ident h1,.strip .ident .facts{display:contents}
+  .strip .ident .facts .url{flex:1 1 0;min-width:0;order:1;font-size:12px}
+  .strip .ident .burger{order:2}
+  .strip .ident .facts .more{display:flex;flex-wrap:wrap;gap:2px 12px;flex-basis:100%;order:3;color:var(--muted)}
+  .strip .burger{display:inline-flex}
+  .strip .acts{display:none;position:absolute;right:16px;z-index:30;flex-direction:column;align-items:stretch;gap:4px;min-width:200px;background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+  .strip.menu-open .acts{display:flex}
+  .strip .acts>button,#rmWrap>button{width:100%;text-align:left}
+  #rmWrap .confirm{flex-wrap:wrap}
+}
 /* collapsible sidebar */
 .side .brand .tog{margin-left:auto;padding:4px 5px}
 .side .brand .tog svg{transition:transform .15s}
@@ -274,7 +368,7 @@ details[open].drawer summary::after{content:"▾"}
   .app.collapsed .side .brand .tog{margin:0}
   .app.collapsed .side .brand b,.app.collapsed .side .brand .pill,.app.collapsed .side .eyebrow,
   .app.collapsed .nav a .id,.app.collapsed .nav a .cs,.app.collapsed .side .foot,
-  .app.collapsed #addForm,.app.collapsed #stEmpty,.app.collapsed .addbtn .full{display:none}
+  .app.collapsed #addForm,.app.collapsed #stEmpty,.app.collapsed #stNone,.app.collapsed #stQ,.app.collapsed #stCount,.app.collapsed .addbtn .full{display:none}
   .app.collapsed .ab{display:block}
   .app.collapsed .nav a{flex-direction:column;gap:3px;padding:6px 2px;justify-content:center;text-align:center}
   .app.collapsed .nav a .ab{font:500 10px var(--mono)}
@@ -292,9 +386,11 @@ details[open].drawer summary::after{content:"▾"}
     <a id="navOv" title="Overview"><span class="ab">All</span><span class="id">Overview</span><span class="cs" id="ovCount"></span></a>
   </nav>
   <div>
-    <div class="eyebrow" style="margin-bottom:6px">Stations</div>
+    <div class="sthd"><span class="eyebrow">Stations</span><span class="note num" id="stCount"></span></div>
+    <input type="text" id="stQ" class="mono stq" placeholder="filter by id, e.g. 06" aria-label="Filter stations" autocomplete="off" spellcheck="false">
     <nav class="nav" id="stList"></nav>
     <div class="note" id="stEmpty" hidden>No stations yet.</div>
+    <div class="note" id="stNone" hidden>No station matches.</div>
   </div>
   <div>
     <button class="addbtn" id="bAddToggle" title="Add station"><span class="ab">+</span><span class="full">+ Add station</span></button>
@@ -337,16 +433,19 @@ details[open].drawer summary::after{content:"▾"}
 <div id="viewSt" hidden>
 <header class="strip">
   <div class="ident">
-    <h1><span class="dot" id="dot"></span><span id="hName"></span><span class="pill bad" id="pillOff" hidden>Offline</span></h1>
+    <h1><span class="dot" id="dot"></span><span id="hName"></span><span class="pill bad" id="pillOff" hidden>Offline</span>
+      <button type="button" class="ghost icon burger" id="bMenu" aria-haspopup="menu" aria-expanded="false" aria-controls="stActs" aria-label="Station actions"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button></h1>
     <div class="facts">
       <span class="url mono" id="fUrl"></span>
+      <span class="more">
       <span title="How long the OCPP socket has been open"><span id="fUpL">up</span> <b id="fUp" class="num">–</b></span>
       <span title="When the CSMS last answered a Heartbeat or BootNotification">heartbeat <b id="fHb" class="num">never</b></span>
       <span title="Process · admin port · profile"><b id="fPid"></b> · <b id="fPort"></b> · <b id="fSim"></b></span>
       <span title="Station calls still waiting for the CSMS"><b id="fPend" class="num">0</b> pending</span>
+      </span>
     </div>
   </div>
-  <div class="row acts">
+  <div class="row acts" id="stActs">
     <button id="bOffline" class="danger">Go offline</button>
     <button id="bReconnect">Reconnect</button>
     <button id="bRestart" title="Restart the station process: reloads its profile and code, drops a running session">Restart</button>
@@ -373,14 +472,8 @@ details[open].drawer summary::after{content:"▾"}
       <div class="hd"><span class="eyebrow">Test controls</span><span class="pv note" id="setPv">all defaults</span></div>
       <div class="grp" style="border-top:0">
         <div class="grphd"><span class="eyebrow">Delays</span><span class="note">Applies at once. Anything that differs from the default shows as a chip in the top bar.</span></div>
-        <div class="field"><label>Answer calls after<span class="note">every CALLRESULT to a CSMS command</span></label>
-          <div class="ctl"><div class="seg" id="segReply"><button data-v="0">at once</button><button data-v="12000">12 s (outlast eMSP timeout)</button><button data-v="custom">custom</button></div>
-          <input type="number" id="replyCustom" placeholder="ms" min="0" max="600000" style="width:90px" hidden></div>
-        </div>
-        <div class="field"><label>Act on remote commands after<span class="note">RemoteStart / RemoteStop</span></label>
-          <div class="ctl"><div class="seg" id="segAct"><button data-v="1000">1 s</button><button data-v="12000">12 s (slow charger)</button><button data-v="custom">custom</button></div>
-          <input type="number" id="actCustom" placeholder="ms" min="0" max="600000" style="width:90px" hidden></div>
-        </div>
+        <div id="slReply"></div>
+        <div id="slAct"></div>
         <div class="field"><label>Meter values every</label>
           <div class="ctl"><div class="seg" id="segMeter"><button data-v="1">1 s</button><button data-v="5">5 s</button><button data-v="15">15 s</button><button data-v="60">60 s</button><button data-v="0">off</button></div></div>
         </div>
@@ -388,8 +481,9 @@ details[open].drawer summary::after{content:"▾"}
       <div class="grp" data-test>
         <span class="eyebrow">Fault injection</span>
         <div class="field"><label>RemoteStart</label>
-          <div class="ctl"><div class="seg" id="segRs"><button data-v="off">answer normally</button><button data-v="ignore">ignore for 60 s</button><button data-v="reject">reject for 60 s</button></div></div>
+          <div class="ctl"><div class="seg" id="segRs"><button data-v="off">answer normally</button><button data-v="ignore">ignore</button><button data-v="reject">reject</button></div></div>
         </div>
+        <div id="rsDurF" hidden></div>
         <div class="field"><label>Plug fault<span class="ii" tabindex="0" data-tip="Plug faults are what the email alert test looks for. Clearing one reports Available.">i</span><span class="note">connector 1, sent at once</span></label>
           <div class="ctl">
             <label class="toggle"><input type="checkbox" id="fFaulted"> Faulted (OtherError)</label>
@@ -447,8 +541,8 @@ details[open].drawer summary::after{content:"▾"}
 // OCPP 1.6 connector statuses, error codes and stop reasons for the pickers.
 const STATUSES=["Available","Preparing","Charging","SuspendedEV","SuspendedEVSE","Finishing","Reserved","Unavailable","Faulted"];
 const ERRS=["NoError","ConnectorLockFailure","EVCommunicationError","GroundFailure","HighTemperature","InternalError","LocalListConflict","OtherError","OverCurrentFailure","OverVoltage","PowerMeterFailure","PowerSwitchFailure","ReaderFailure","ResetFailure","UnderVoltage","WeakSignal"];
-const STOP_REASONS=["Local","Remote","EVDisconnected","PowerLoss","HardReset","EmergencyStop","DeAuthorized","Other"];
-const SPEEDS=[["0","Hold 0 kW"],["3.7","3.7 kW"],["7.4","7.4 kW"],["11","11 kW"],["22","22 kW"],["50","50 kW"]];
+const STOP_REASONS=["Local","Remote","EVDisconnected","PowerLoss","HardReset","SoftReset","EmergencyStop","DeAuthorized","UnlockCommand","Reboot","Other"];
+const STOP_HINTS={Local:"charger side, default",Remote:"RemoteStopTransaction",EVDisconnected:"cable pulled",DeAuthorized:"tag no longer valid"};
 const SUB={
   Available:"Nothing plugged in. Waiting for a car or a remote start.",
   Preparing:"Cable plugged in. Authorize and start, or wait for a RemoteStartTransaction.",
@@ -503,21 +597,42 @@ const connAction=(id,connectorId,action,extra)=>simPost(id,"connector-action",Ob
 
 // ------- selection -------
 function cur(){return sims[selected]||null;}
-function select(id){selected=id;try{localStorage.setItem(SELECTED_KEY,id);}catch{}T.open=null;T.sig="";renderAll();refreshTimeline();}
+function select(id){selected=id;$(".strip").classList.remove("menu-open");try{localStorage.setItem(SELECTED_KEY,id);}catch{}T.open=null;T.sig="";renderAll();refreshTimeline();}
 $("#navOv").onclick=()=>select("overview");
 
 // ------- sidebar -------
 function linkState(s){if(!s.up)return["down","bad"];if(s.connected)return["connected","good"];return[s.offline?"offline":"disconnected","bad"];}
 function connSummary(s){const cs=s.connectors||[];if(!s.up)return"process down";if(!s.connected)return s.offline?"offline":"disconnected";return cs.map(c=>c.status||"?").join(" · ")||"connected";}
+// Which characters of a station id the filter matches, or null for no match:
+// a plain substring first, else the query's digits as a run in the id's digits
+// (so "6" and "06" find SIM-0006).
+function stMatch(id,q){
+  if(!q)return new Set();
+  const at=id.toLowerCase().indexOf(q.toLowerCase());
+  if(at>=0)return new Set(Array.from({length:q.length},(_,i)=>at+i));
+  const qd=q.replace(/\D/g,"");if(!qd)return null;
+  const pos=[];for(let i=0;i<id.length;i++)if(/\d/.test(id[i]))pos.push(i);
+  const d=pos.map(i=>id[i]).join("").indexOf(qd);
+  return d<0?null:new Set(pos.slice(d,d+qd.length));
+}
+function markId(id,hit){let out="",open=false;
+  for(let i=0;i<id.length;i++){const on=hit.has(i);if(on!==open){out+=on?"<mark>":"</mark>";open=on;}out+=esc(id[i]);}
+  return out+(open?"</mark>":"");}
+$("#stQ").oninput=()=>renderSide();
+$("#stQ").onkeydown=e=>{if(e.key==="Escape"){e.target.value="";renderSide();}};
 function renderSide(){
   const n=order.filter(id=>sims[id].connected).length;
   const pa=$("#pillAll");pa.textContent=order.length?`${n}/${order.length} connected`:"no stations";
   pa.className="pill "+(!order.length?"":n===order.length?"good":n?"warn":"bad");
   $("#ovCount").textContent=order.length||"";$("#navOv").classList.toggle("sel",selected==="overview");
   const l=$("#stList");l.innerHTML="";$("#stEmpty").hidden=order.length>0;
-  order.forEach(id=>{const x=sims[id];const a=document.createElement("a");a.className=id===selected?"sel":"";
-    a.innerHTML=`<span class="dot ${x.connected?"":"off"}"></span><span class="ab">${esc(x.cpId.slice(-4))}</span><span class="id">${esc(x.cpId)}</span><span class="cs">${esc(connSummary(x))}</span>`;
+  const q=$("#stQ").value.trim();let shown=0;
+  order.forEach(id=>{const x=sims[id];const hit=stMatch(x.cpId,q);if(!hit)return;shown++;
+    const a=document.createElement("a");a.className=id===selected?"sel":"";
+    a.innerHTML=`<span class="dot ${x.connected?"":"off"}"></span><span class="ab">${esc(x.cpId.slice(-4))}</span><span class="id">${markId(x.cpId,hit)}</span><span class="cs">${esc(connSummary(x))}</span>`;
     a.title=`${x.cpId} · ${connSummary(x)} · ${x.id} · admin :${x.adminPort}`;a.onclick=()=>select(id);l.append(a);});
+  $("#stCount").textContent=!order.length?"":q?`${shown} of ${order.length}`:String(order.length);
+  $("#stNone").hidden=!(q&&order.length&&!shown);
   if(defaults)$("#dirs").innerHTML=`profiles: ${esc(defaults.profilesDir)}<br>logs: ${esc(defaults.logDir)}`;
 }
 
@@ -588,6 +703,60 @@ async function txExec(simId,c,action){
 // ------- station view -------
 let SV=null; // {id, shape, cards: Map}
 function shapeOf(s){return[s.id,s.numConnectors,s.isTestCharger?"t":"p",s.managed?"m":"x"].join("|");}
+// Range control in the header row pattern: label and an editable value on
+// top, the track at full width, the preset marks under it. The gaps between
+// marks grow by MARK_R each, and the value is linear between two marks.
+// Dragging near a mark snaps onto it; typing places the thumb without snapping.
+// Commits on release, and a refresh never moves the thumb under the pointer.
+const MARK_R=1.35;
+function markPos(presets){
+  const n=presets.length-1,g=[],m=[0];let tot=0;
+  for(let i=0;i<n;i++){g.push(MARK_R**i);tot+=g[i];}
+  for(let i=0;i<n;i++)m.push(m[i]+g[i]/tot);
+  m[n]=1;return m;
+}
+function slider({name,label,presets,unit,round,onCommit}){
+  const m=markPos(presets),n=presets.length-1,min=presets[0],max=presets[n];
+  const toPos=v=>{if(v<=min)return 0;if(v>=max)return 1;for(let i=0;i<n;i++)if(v<=presets[i+1])return m[i]+(v-presets[i])/(presets[i+1]-presets[i])*(m[i+1]-m[i]);return 1;};
+  const fromPos=x=>{for(let i=0;i<n;i++)if(x<=m[i+1])return presets[i]+(x-m[i])/(m[i+1]-m[i])*(presets[i+1]-presets[i]);return max;};
+  const w=Math.max(...presets.map(v=>String(v).length))+1;
+  const el=document.createElement("div");el.className="sl";
+  el.innerHTML=`<div class="sl-hd"><span class="lbl">${label}</span><span class="sl-v"><input type="number" min="${min}" max="${max}" step="any" style="width:${w}ch" aria-label="${esc(name)}, ${esc(unit)}"><span class="unit">${esc(unit)}</span></span></div>
+    <input type="range" min="0" max="1000" step="1" aria-label="${esc(name)}">
+    <div class="sl-marks">${presets.map((v,i)=>`<button type="button" style="${i===0?"left:0":i===n?"right:0":`left:calc(8px + ${m[i]} * (100% - 16px))`}">${v}</button>`).join("")}</div>`;
+  const [num,rng]=el.querySelectorAll("input"),marks=[...el.querySelectorAll(".sl-marks button")];
+  let val=null,drag=false,busy=0;
+  const paint=(v,x)=>{val=v;rng.value=Math.round(x*1000);rng.style.setProperty("--p",x);if(document.activeElement!==num)num.value=v;
+    rng.setAttribute("aria-valuetext",`${v} ${unit}`);marks.forEach((b,i)=>b.classList.toggle("on",presets[i]===v));};
+  const show=v=>paint(v,toPos(v));
+  const commit=v=>{drag=false;busy=Date.now();num.value=v;show(v);onCommit(v);};
+  rng.onpointerdown=()=>{drag=true;};rng.onpointerup=()=>{drag=false;busy=Date.now();};
+  rng.oninput=()=>{busy=Date.now();const x=rng.value/1000;let i=0;m.forEach((p,j)=>{if(Math.abs(p-x)<Math.abs(m[i]-x))i=j;});
+    if(Math.abs(m[i]-x)<0.04)paint(presets[i],m[i]);else paint(round(fromPos(x)),x);};
+  rng.onchange=()=>commit(val);
+  marks.forEach((b,i)=>b.onclick=()=>commit(presets[i]));
+  num.onkeydown=e=>{if(e.key==="Enter")num.blur();};
+  num.onchange=()=>{const v=parseFloat(num.value);if(isNaN(v)){num.value=val;return;}commit(round(Math.min(max,Math.max(min,v))));};
+  return {el,set(v){if(drag||Date.now()-busy<2000||document.activeElement===num)return;show(v);}};
+}
+// The Stop transaction split button: the main part stops with Local, the
+// arrow opens a menu of every OCPP 1.6 stop reason that stops at once.
+function stopSplit(stop,scheduled){
+  const w=document.createElement("div");w.className="split";
+  w.innerHTML=`<button type="button" class="primary arrow" aria-haspopup="menu" aria-expanded="false" aria-label="Stop with another reason"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button><button type="button" class="primary main" data-tip="Stops with reason Local">Stop transaction</button>
+    <div class="menu" role="menu" aria-label="Stop with reason" hidden><div class="mh">Stop with reason</div>${STOP_REASONS.map(x=>`<button type="button" role="menuitem" data-v="${x}">${x}${STOP_HINTS[x]?`<span>${STOP_HINTS[x]}</span>`:""}</button>`).join("")}</div>`;
+  const arrow=w.querySelector(".arrow"),menu=w.querySelector(".menu"),items=[...menu.querySelectorAll("[role=menuitem]")];
+  const open=on=>{menu.hidden=!on;arrow.setAttribute("aria-expanded",String(on));if(on)items[0].focus();};
+  w.querySelector(".main").onclick=()=>stop("Local");
+  arrow.onclick=()=>open(menu.hidden);
+  items.forEach((b,i)=>{b.onclick=()=>{open(false);stop(b.dataset.v);};
+    b.onkeydown=e=>{if(e.key==="ArrowDown"||e.key==="ArrowUp"){e.preventDefault();items[(i+(e.key==="ArrowDown"?1:items.length-1))%items.length].focus();}};});
+  w.addEventListener("keydown",e=>{if(e.key==="Escape"&&!menu.hidden){open(false);arrow.focus();}});
+  if(scheduled){arrow.disabled=true;arrow.dataset.tip="The scheduler stops its own sessions";}
+  return w;
+}
+document.addEventListener("pointerdown",e=>document.querySelectorAll(".split .menu:not([hidden])").forEach(menu=>{
+  const w=menu.parentElement;if(w.contains(e.target))return;menu.hidden=true;w.querySelector(".arrow").setAttribute("aria-expanded","false");}));
 function seg(root,v){(typeof root==="string"?document.querySelectorAll(`#${root} button`):root.querySelectorAll("button")).forEach(b=>b.classList.toggle("on",b.dataset.v===String(v)));}
 
 function buildStation(s){
@@ -605,26 +774,29 @@ function buildCard(s,c){
   const el=document.createElement("section");el.className="card";
   const test=s.isTestCharger,multi=s.numConnectors>1;
   el.innerHTML=`<div class="hd"><span class="eyebrow">Connector ${c}</span><span class="note" data-r="sched"></span><span class="badge" data-r="tx">no transaction</span></div>
-  <div class="bd">
+  <div class="bd conn">
     <div class="conn-state"><div style="flex:1"><div class="big" data-r="big"></div><div class="sub" data-r="sub"></div></div><span class="badge" data-r="err"></span></div>
     <div class="meters">
       <div class="meter"><div class="v num" data-r="kw">0.0</div><div class="l">kW now</div></div>
-      <div class="meter"><div class="v num" data-r="kwh">0.000</div><div class="l" data-r="kwhL">kWh this session</div><div class="bar"><i data-r="bar"></i></div></div>
-      <div class="meter"><div class="v num mono" data-r="txid">–</div><div class="l">transaction id</div></div>
+      <button type="button" class="meter" data-r="kwhT" data-tip="Meter ticks only while charging"><div class="v num" data-r="kwh">0.000</div><div class="l"><span data-r="kwhL">kWh this session</span><span class="send"> · send now</span></div><div class="bar"><i data-r="bar"></i></div></button>
       <div class="meter" data-r="socTile" hidden><div class="v num" data-r="soc">–</div><div class="l" data-r="socL">state of charge</div><div class="bar"><i data-r="socBar"></i></div></div>
     </div>
     <div class="conn-alert" data-r="alert" hidden></div>
     <div class="actions" data-r="actions"></div>
     ${test?`<div class="stack" style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
-      <div class="field"><label>Charger power${multi?'<span class="note">station-wide</span>':""}</label><div class="ctl"><div class="seg" data-r="speed">${SPEEDS.map(([v,l])=>`<button data-v="${v}">${l}</button>`).join("")}</div></div></div>
+      <div data-r="speed"></div>
+      <div class="field tgl"><label>Fluctuate power<span class="ii" tabindex="0" data-tip="The car draws a slowly wandering 82 to 98% of the charger power, never the full set value.">i</span>${multi?'<span class="note">station-wide</span>':""}</label><div class="ctl"><label class="toggle"><input type="checkbox" data-r="fluct" aria-label="Fluctuate power"></label></div></div>
       <div class="field"><label>After stop<span class="ii" tabindex="0" data-tip="Manual unplug stays in Finishing until you press Unplug.">i</span>${multi?'<span class="note">station-wide</span>':""}</label><div class="ctl"><div class="seg" data-r="unplug"><button data-v="auto">Auto unplug</button><button data-v="manual">Manual unplug</button></div></div></div>
       <div class="field"><label>Stop after <span class="note">kWh, blank = never${multi?", station-wide":""}</span></label><div class="ctl"><input type="number" step="0.25" min="0" placeholder="kWh" style="width:90px" data-r="auto"></div></div>
-      <div class="field"><label>Simulate state of charge <span class="note">SoC in MeterValues, stops at 100%</span></label>
+      <div class="field tgl" data-r="socRow"><label>Simulate state of charge <span class="note">SoC in MeterValues, stops at 100%</span></label>
         <div class="ctl">
           <span class="socf" data-r="socF" hidden><input type="number" min="1" max="1000" step="1" style="width:70px" data-r="socCap" value="60"><span class="note">kWh battery</span>
           <input type="number" min="0" max="100" step="1" style="width:64px" data-r="socStart" value="20"><span class="note">% at start</span></span>
           <label class="toggle"><input type="checkbox" data-r="socOn" aria-label="Simulate state of charge"></label>
         </div>
+      </div>
+      <div class="field tgl" data-r="curveF" hidden><label>Real charge curve<span class="ii" tabindex="0" data-tip="Up to 22 kW (AC) full power lasts to 80%, then falls to a tenth by 100%. Above 22 kW (DC) it already eases off from 50% (70% of the power at 80%).">i</span><span class="note">power tapers as the battery fills</span></label>
+        <div class="ctl"><label class="toggle"><input type="checkbox" data-r="curveOn" aria-label="Real charge curve"></label></div>
       </div>
     </div>`:""}
     <details class="more"><summary>Force a status</summary>
@@ -633,41 +805,52 @@ function buildCard(s,c){
     </details>
   </div>`;
   const r=k=>el.querySelector(`[data-r="${k}"]`);
+  let speed=null;
+  r("kwhT").onclick=()=>{if(r("kwhT").classList.contains("live"))simPost(s.id,"meter-tick",{connectorId:c},"MeterValues sent");};
   r("force").onclick=()=>exec(s.id,"StatusNotification",{connectorId:c,errorCode:r("ferr").value,status:r("fst").value});
   if(test){
-    r("speed").querySelectorAll("button").forEach(b=>b.onclick=()=>{const v=b.dataset.v;simPost(s.id,"charging-power",{kw:+v},`Charger power ${v} kW`);});
+    speed=slider({name:"Charger power",label:`Charger power${multi?'<span class="note">station-wide</span>':""}`,presets:[0,3.7,7.4,11,22,50,350],unit:"kW",
+      round:v=>v<11?Math.round(v*10)/10:Math.round(v),
+      onCommit:v=>simPost(s.id,"charging-power",{kw:v},v===0?"Holding 0 kW":`Charger power ${v} kW`)});
+    r("speed").append(speed.el);
     r("unplug").querySelectorAll("button").forEach(b=>b.onclick=()=>{const v=b.dataset.v;simPost(s.id,"unplug-mode",{mode:v},v==="manual"?"After a stop the cable stays in until Unplug":"After a stop the connector goes back to Available");});
     r("auto").onchange=e=>{const v=parseFloat(e.target.value);simPost(s.id,"charge-target",{kwh:v>0?v:null},v>0?`Stops itself at ${v} kWh`:"Auto-stop cleared");};
-    const socSend=()=>{const on=r("socOn").checked;simPost(s.id,"soc",on?{connectorId:c,enabled:true,batteryKwh:Math.max(1,+r("socCap").value||60),startPercent:Math.min(100,Math.max(0,+r("socStart").value||0))}:{connectorId:c,enabled:false},
-      on?`Connector ${c}: ${r("socCap").value} kWh battery from ${r("socStart").value}%`:`Connector ${c}: battery simulation off`);};
-    r("socOn").onchange=()=>{r("socF").hidden=!r("socOn").checked;socSend();};
-    r("socCap").onchange=socSend;r("socStart").onchange=socSend;
+    const socSend=()=>{const on=r("socOn").checked,curve=r("curveOn").checked;simPost(s.id,"soc",on?{connectorId:c,enabled:true,batteryKwh:Math.max(1,+r("socCap").value||60),startPercent:Math.min(100,Math.max(0,+r("socStart").value||0)),curve}:{connectorId:c,enabled:false},
+      on?`Connector ${c}: ${r("socCap").value} kWh battery from ${r("socStart").value}%${curve?", real charge curve":""}`:`Connector ${c}: battery simulation off`);};
+    r("socOn").onchange=()=>{const on=r("socOn").checked;r("socF").hidden=r("curveF").hidden=!on;r("socRow").classList.toggle("on",on);socSend();};
+    r("socCap").onchange=socSend;r("socStart").onchange=socSend;r("curveOn").onchange=socSend;
+    r("fluct").onchange=e=>simPost(s.id,"charging-power",{fluctuate:e.target.checked},e.target.checked?"Power fluctuates under the set value":"Power held steady");
   }
-  return {el,r,lastKey:null};
+  return {el,r,speed,lastKey:null};
 }
 
 // The connector as a state machine: which buttons fit what it last reported.
 function renderActions(s,c,k,status,tx,st){
-  const a=k.r("actions");a.innerHTML="";
+  const a=k.r("actions");a.innerHTML="";a.className="actions";
   const scheduled=!!(st&&st.tx);
   const stop=reason=>scheduled?txExec(s.id,c,"stop"):connAction(s.id,c,"stop",{reason});
   if(status==="Available"||(!status&&!tx)){
     a.append(btn("Plug in",()=>connAction(s.id,c,"plug_in"),"primary"));
     const hint=document.createElement("span");hint.className="hint";hint.textContent="Or wait for a RemoteStartTransaction from the eMSP.";a.append(hint);
   }else if(status==="Preparing"&&!tx){
-    const tag=document.createElement("input");tag.placeholder="idTag · empty = next free key";tag.className="mono";tag.dataset.r="tag";
+    a.classList.add("prep");
+    const tag=document.createElement("input");tag.placeholder="idTag";tag.className="mono";tag.dataset.r="tag";tag.setAttribute("aria-label","idTag");
     const t=()=>tag.value.trim();
-    a.append(tag,btn("Authorize",()=>connAction(s.id,c,"authorize",t()?{idTag:t()}:{})),
+    // A blank Authorize goes out with the station's own TOKEN; read it back
+    // from the Authorize frame so Start uses the tag that was authorized.
+    const authorize=async()=>{const since=Date.now()-5000;await connAction(s.id,c,"authorize",t()?{idTag:t()}:{});if(t())return;
+      setTimeout(async()=>{await refreshTimeline();const e=buildEvents(T.frames,"").filter(x=>x.action==="Authorize"&&x.dir==="out"&&+x.t>=since).pop();
+        const f=k.r("tag");if(e&&f&&!f.value)f.value=e.payload.idTag;},500);};
+    a.append(tag,btn("Authorize",authorize),
       btn("Start transaction",()=>t()?connAction(s.id,c,"start",{idTag:t()}):txExec(s.id,c,"start"),"primary"),
       btn("Unplug",()=>connAction(s.id,c,"unplug"),"danger end"));
   }else if(tx&&(status==="SuspendedEV"||status==="SuspendedEVSE")){
-    a.append(btn("Resume charging",()=>connAction(s.id,c,"resume"),"primary"),btn("Stop transaction",()=>stop("Local")),
+    a.classList.add("chg");
+    a.append(stopSplit(stop,scheduled),btn("Resume charging",()=>connAction(s.id,c,"resume")),
       btn("Unplug",()=>scheduled?txExec(s.id,c,"stop"):connAction(s.id,c,"unplug"),"danger end"));
   }else if(tx){
-    const sel=document.createElement("select");STOP_REASONS.forEach(x=>{const o=document.createElement("option");o.textContent=x;sel.append(o);});
-    if(scheduled){sel.disabled=true;sel.title="The scheduler stops its own sessions";}
-    a.append(btn("Stop transaction",()=>stop(sel.value),"primary"),sel,btn("Meter tick",()=>simPost(s.id,"meter-tick",{connectorId:c},"MeterValues sent")),
-      btn("Suspend",()=>connAction(s.id,c,"suspend"),"ghost"),
+    a.classList.add("chg");
+    a.append(stopSplit(stop,scheduled),btn("Suspend",()=>connAction(s.id,c,"suspend"),"ghost"),
       btn("Unplug",()=>scheduled?txExec(s.id,c,"stop"):connAction(s.id,c,"unplug"),"danger end"));
   }else if(status==="Finishing"){
     a.append(btn("Unplug",()=>connAction(s.id,c,"unplug"),"primary"));
@@ -709,16 +892,18 @@ function updateStation(s){
     k.r("kwh").textContent=tx?(tx.meterWh/1000).toFixed(3):"0.000";
     k.r("kwhL").textContent=target?`kWh, stops at ${target}`:"kWh this session";
     k.r("bar").style.width=tx&&target?Math.min(100,tx.meterWh/1000/target*100)+"%":"0%";
-    k.r("txid").textContent=tx?tx.transactionId:"–";
+    const hot=status==="Charging"&&!!tx,kt=k.r("kwhT");kt.classList.toggle("live",hot);kt.setAttribute("aria-disabled",String(!hot));
+    kt.dataset.tip=hot?"Send MeterValues now":"Meter ticks only while charging";
     const soc=cs.soc;k.r("socTile").hidden=!soc;
     if(soc){const v=tx&&tx.socPercent!=null?tx.socPercent:soc.startPercent;k.r("soc").textContent=Math.floor(v)+"%";k.r("socBar").style.width=v+"%";
       k.r("socL").textContent=tx&&tx.full?`full · ${soc.batteryKwh} kWh battery`:`SoC · ${soc.batteryKwh} kWh battery`;}
     const al=k.r("alert");const fails=st?st.consecutiveFailures:0;al.hidden=!(fails>=(txSettings?.failureAlertThreshold||5));
     al.textContent=`Scheduler: ${fails} failed start attempts in a row. Is the admin API down?`;
     if(s.isTestCharger){
-      const cp=s.chargingPower||{};const kw=cp.kw;seg(k.r("speed"),kw);seg(k.r("unplug"),s.unplugMode||"auto");
+      const cp=s.chargingPower||{};k.speed?.set(cp.kw??36);const fl=k.r("fluct");if(document.activeElement!==fl)fl.checked=!!cp.fluctuate;seg(k.r("unplug"),s.unplugMode||"auto");
       const ai=k.r("auto");if(document.activeElement!==ai)ai.value=target??"";
-      const on=k.r("socOn");if(document.activeElement!==on)on.checked=!!soc;k.r("socF").hidden=!on.checked;
+      const on=k.r("socOn");if(document.activeElement!==on)on.checked=!!soc;k.r("socF").hidden=k.r("curveF").hidden=!on.checked;k.r("socRow").classList.toggle("on",on.checked);
+      const cu=k.r("curveOn");if(document.activeElement!==cu)cu.checked=!!(soc&&soc.curve);
       if(soc){if(document.activeElement!==k.r("socCap"))k.r("socCap").value=soc.batteryKwh;if(document.activeElement!==k.r("socStart"))k.r("socStart").value=soc.startPercent;}
     }
     const key=[s.up,status,!!tx,!!(st&&st.tx),JSON.stringify((s.faults||{})[c]||{})].join("|");
@@ -726,12 +911,11 @@ function updateStation(s){
   });
   // test controls
   const d=s.delays||{replyMs:0,actMs:1000};
-  const rc=$("#replyCustom"),ac=$("#actCustom");
-  const replyPreset=[0,12000].includes(d.replyMs);if(!rc.dataset.editing){seg("segReply",replyPreset?d.replyMs:"custom");rc.hidden=replyPreset;if(document.activeElement!==rc)rc.value=d.replyMs;}
-  const actPreset=[1000,12000].includes(d.actMs);if(!ac.dataset.editing){seg("segAct",actPreset?d.actMs:"custom");ac.hidden=actPreset;if(document.activeElement!==ac)ac.value=d.actMs;}
+  slReply.set(d.replyMs/1000);slAct.set(d.actMs/1000);
   const m=s.meter||{auto:true,intervalMs:15000};seg("segMeter",m.auto?String(Math.round(m.intervalMs/1000)):"0");
   if(s.isTestCharger){
     const fm=s.failMode||{mode:"off"};seg("segRs",fm.mode==="accept_no_start"?"":fm.mode);
+    $("#rsDurF").hidden=!["ignore","reject"].includes(fm.mode);
     const f=(s.faults||{})[1]||{};$("#fFaulted").checked=!!f.faulted;$("#fTemp").checked=!!f.highTemperature;
     if(w&&w.url){$("#connPv").textContent=w.url+(w.source==="override"?" (override)":" (from .env)");const ui=$("#url");if(document.activeElement!==ui&&!ui.value)ui.value=w.url;}
   }
@@ -755,8 +939,9 @@ function chips(s){
   const cp=s.chargingPower;
   if(cp&&cp.kw===0)out.push({c:"",t:"Holding 0 kW",clear:()=>simPost(s.id,"charging-power",{kw:null})});
   else if(cp&&cp.kw!=null)out.push({c:"info",t:`Charger power ${cp.kw} kW`,clear:()=>simPost(s.id,"charging-power",{kw:null})});
+  if(cp&&cp.fluctuate)out.push({c:"info",t:"Power fluctuates",clear:()=>simPost(s.id,"charging-power",{fluctuate:false})});
   if(s.chargeTarget&&s.chargeTarget.kwh!=null)out.push({c:"info",t:`Auto-stop at ${s.chargeTarget.kwh} kWh`,clear:()=>simPost(s.id,"charge-target",{kwh:null})});
-  (s.connectors||[]).forEach(c=>{if(c.soc)out.push({c:"info",t:`${s.numConnectors>1?"C"+c.connectorId+" ":""}battery ${c.soc.batteryKwh} kWh from ${c.soc.startPercent}%`,clear:()=>simPost(s.id,"soc",{connectorId:c.connectorId,enabled:false})});});
+  (s.connectors||[]).forEach(c=>{if(c.soc)out.push({c:"info",t:`${s.numConnectors>1?"C"+c.connectorId+" ":""}battery ${c.soc.batteryKwh} kWh from ${c.soc.startPercent}%${c.soc.curve?", real curve":""}`,clear:()=>simPost(s.id,"soc",{connectorId:c.connectorId,enabled:false})});});
   if(s.wsUrlState&&s.wsUrlState.source==="override")out.push({c:"info",t:"OCPP URL override",clear:()=>setUrl(s,null)});
   const el=$("#chips");el.innerHTML="";
   out.forEach(o=>{const ch=document.createElement("span");ch.className="chip "+o.c;const sp=document.createElement("span");sp.textContent=o.t;ch.append(sp);const b=document.createElement("button");b.title="Clear";b.textContent="×";b.onclick=o.clear;ch.appendChild(b);el.appendChild(ch);});
@@ -770,23 +955,34 @@ function setUrl(s,url){
 }
 
 // static wiring of the station view (acts on whatever station is shown)
-document.querySelectorAll("#segReply button").forEach(b=>b.onclick=()=>{const s=cur();if(!s)return;const rc=$("#replyCustom");
-  if(b.dataset.v==="custom"){seg("segReply","custom");rc.hidden=false;rc.dataset.editing="1";rc.focus();}else{delete rc.dataset.editing;simPost(s.id,"delays",{replyMs:+b.dataset.v});}});
-$("#replyCustom").onchange=e=>{const s=cur();delete e.target.dataset.editing;if(s)simPost(s.id,"delays",{replyMs:Math.max(0,+e.target.value||0)});};
-document.querySelectorAll("#segAct button").forEach(b=>b.onclick=()=>{const s=cur();if(!s)return;const ac=$("#actCustom");
-  if(b.dataset.v==="custom"){seg("segAct","custom");ac.hidden=false;ac.dataset.editing="1";ac.focus();}else{delete ac.dataset.editing;simPost(s.id,"delays",{actMs:+b.dataset.v});}});
-$("#actCustom").onchange=e=>{const s=cur();delete e.target.dataset.editing;if(s)simPost(s.id,"delays",{actMs:Math.max(0,+e.target.value||0)});};
+const DELAYS=[0,1,5,12,30,60,120,240];
+const slReply=slider({name:"Answer calls after",label:'Answer calls after<span class="ii" tabindex="0" data-tip="12 s outlasts the eMSP timeout.">i</span><span class="note">every CALLRESULT to a CSMS command</span>',
+  presets:DELAYS,unit:"s",round:Math.round,onCommit:v=>{const s=cur();if(s)simPost(s.id,"delays",{replyMs:v*1000},v?`Replies delayed ${v} s`:"Replies go out at once");}});
+const slAct=slider({name:"Act on remote commands after",label:'Act on remote commands after<span class="ii" tabindex="0" data-tip="A real charger takes about 1 s; 12 s plays a slow one.">i</span><span class="note">RemoteStart / RemoteStop</span>',
+  presets:DELAYS,unit:"s",round:Math.round,onCommit:v=>{const s=cur();if(s)simPost(s.id,"delays",{actMs:v*1000},`Acts on remote commands after ${v} s`);}});
+$("#slReply").append(slReply.el);$("#slAct").append(slAct.el);
+// How long a RemoteStart fault lasts; picking a new length restarts the clock.
+let rsDurS=60;
+const rsFail=(s,mode)=>simPost(s.id,"fail-mode",mode==="off"?{mode}:{mode,durationMs:rsDurS*1000},mode==="off"?"RemoteStart answered normally":`RemoteStart: ${mode} for ${rsDurS} s`);
+const slRsDur=slider({name:"Keep it up for",label:'Keep it up for<span class="note">then RemoteStart is answered normally again</span>',
+  presets:[10,30,60,120,240,600],unit:"s",round:Math.round,onCommit:v=>{rsDurS=v;const s=cur(),m=s&&s.failMode&&s.failMode.mode;if(m==="ignore"||m==="reject")rsFail(s,m);}});
+$("#rsDurF").append(slRsDur.el);slRsDur.set(rsDurS);
 document.querySelectorAll("#segMeter button").forEach(b=>b.onclick=()=>{const s=cur();if(!s)return;const v=+b.dataset.v;
-  simPost(s.id,"meter",v===0?{auto:false}:{auto:true,intervalSeconds:v},v===0?"Auto meter off: use Meter tick":`Meter values every ${v} s`);});
-document.querySelectorAll("#segRs button").forEach(b=>b.onclick=()=>{const s=cur();if(!s)return;const mode=b.dataset.v;
-  simPost(s.id,"fail-mode",mode==="off"?{mode}:{mode,durationMs:60000},mode==="off"?"RemoteStart answered normally":`RemoteStart: ${mode} for 60 s`);});
+  simPost(s.id,"meter",v===0?{auto:false}:{auto:true,intervalSeconds:v},v===0?"Auto meter off: click the kWh tile to send one":`Meter values every ${v} s`);});
+document.querySelectorAll("#segRs button").forEach(b=>b.onclick=()=>{const s=cur();if(s)rsFail(s,b.dataset.v);});
 $("#fFaulted").onchange=e=>{const s=cur();if(s)simPost(s.id,"fault",{connectorId:1,type:"faulted",on:e.target.checked});};
 $("#fTemp").onchange=e=>{const s=cur();if(s)simPost(s.id,"fault",{connectorId:1,type:"high_temperature",on:e.target.checked});};
 $("#bSetUrl").onclick=()=>{const s=cur();if(!s)return;const v=$("#url").value.trim();if(!/^wss?:\/\//i.test(v))return toast("The URL must start with ws:// or wss://",true);setUrl(s,v);};
 $("#bEnv").onclick=()=>{const s=cur();if(s)setUrl(s,null);};
-$("#bOffline").onclick=()=>{const s=cur();if(s)toggleLink(s);};
-$("#bReconnect").onclick=()=>{const s=cur();if(s)reconnect(s);};
-$("#bRestart").onclick=()=>{const s=cur();if(s&&confirm(`Restart ${s.cpId}? A running session is dropped; it reconnects in about 3 s.`))restart(s);};
+// Narrow screens: the station actions drop down from the burger in the header.
+const stMenu=on=>{const st=$(".strip"),b=$("#bMenu");st.classList.toggle("menu-open",on);b.setAttribute("aria-expanded",String(on));
+  if(on)$("#stActs").style.top=b.getBoundingClientRect().bottom-st.getBoundingClientRect().top+4+"px";};
+$("#bMenu").onclick=()=>stMenu(!$(".strip").classList.contains("menu-open"));
+document.addEventListener("pointerdown",e=>{if($(".strip").classList.contains("menu-open")&&!e.target.closest("#stActs,#bMenu"))stMenu(false);});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&$(".strip").classList.contains("menu-open")){stMenu(false);$("#bMenu").focus();}});
+$("#bOffline").onclick=()=>{stMenu(false);const s=cur();if(s)toggleLink(s);};
+$("#bReconnect").onclick=()=>{stMenu(false);const s=cur();if(s)reconnect(s);};
+$("#bRestart").onclick=()=>{stMenu(false);const s=cur();if(s&&confirm(`Restart ${s.cpId}? A running session is dropped; it reconnects in about 3 s.`))restart(s);};
 document.querySelectorAll(".scen button").forEach(b=>b.onclick=async()=>{const s=cur();if(!s)return;const k=b.dataset.s;
   if(k==="boot"){
     await exec(s.id,"BootNotification",{chargePointVendor:"Solidstudio",chargePointModel:"VirtualChargePoint",chargePointSerialNumber:"S001",firmwareVersion:"1.0.0"},null);
