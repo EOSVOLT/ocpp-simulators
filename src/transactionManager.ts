@@ -12,6 +12,42 @@ export const LEGACY_RATE_W = 36_000;
 // noise, or when the values are driven by admin commands instead.
 const METER_VALUES_DISABLED = process.env.DISABLE_METER_VALUES === "true";
 
+// While the power varies (charge curve, fluctuation) the register is
+// integrated in steps of at most this long.
+const INTEGRATION_STEP_MS = 1000;
+
+// The share of the charger's power a car takes at this state of charge, the
+// way a lithium pack tapers once the cells near their voltage limit. AC (up
+// to 22 kW) is held back by the on-board charger, so full power lasts to 80 %
+// and then falls to a tenth by 100 %. DC eases off from 50 % (70 % of the
+// power at 80 %) before the same fall to a tenth.
+const chargeCurve = (socPercent: number, powerW: number): number => {
+  const soc = Math.min(100, Math.max(0, socPercent));
+  if (powerW <= 22_000) {
+    return soc < 80 ? 1 : 1 - (0.9 * (soc - 80)) / 20;
+  }
+  if (soc < 50) {
+    return 1;
+  }
+  if (soc < 80) {
+    return 1 - (0.3 * (soc - 50)) / 30;
+  }
+  return 0.7 - (0.6 * (soc - 80)) / 20;
+};
+
+// A slow, smooth wobble between 82 % and 98 % of the power: three sines a
+// few tens of seconds to a few minutes long, phased per transaction so two
+// connectors never move in step. Never reaches the set power.
+const fluctuation = (seed: number, time: number): number => {
+  const s = time / 1000;
+  const wave =
+    (Math.sin(s / 3 + seed) +
+      0.7 * Math.sin(s / 11 + seed * 2.3) +
+      0.5 * Math.sin(s / 37 + seed * 4.1)) /
+    2.2;
+  return 0.9 + 0.08 * wave;
+};
+
 export type TransactionId = string | number;
 
 interface TransactionState {
@@ -21,11 +57,12 @@ interface TransactionState {
   meterValue: number;
   evseId?: number;
   connectorId: number;
-  // Rebase anchor for power-based metering (only used when chargingPowerW is
-  // set): the accumulated Wh and wall-clock at the last power change, so the
-  // energy register stays monotonic when the charging speed is changed mid-session.
+  // The register as integrated up to baseTime. Every read brings it up to
+  // now at the power of the moment, so it stays monotonic whatever changes.
   baseWh: number;
   baseTime: number;
+  // Phase of this transaction's power fluctuation.
+  seed: number;
   // The connector reports SuspendedEV/SuspendedEVSE: no energy flows, so the
   // register holds still until the connector reports Charging again.
   paused: boolean;
@@ -37,6 +74,8 @@ interface TransactionState {
 export interface SocConfig {
   batteryWh: number;
   startPercent: number;
+  // Taper the power with the state of charge (see chargeCurve).
+  curve: boolean;
 }
 
 // One transaction's live reading, as MeterValues and the admin API report it.
@@ -88,17 +127,28 @@ export class TransactionManager {
   // from DISABLE_METER_VALUES and can be flipped at runtime (admin /meter).
   autoMeterValues = !METER_VALUES_DISABLED;
 
+  // Draw a varying power, always under the set one (admin /charging-power).
+  fluctuate = false;
+
   // Simulated batteries by connector id. Sticky across sessions until cleared.
   private socConfigs = new Map<number, SocConfig>();
 
   // Rebase every active transaction to its current reading, then switch power,
   // so changing speed never makes the energy register jump backwards.
   setChargingPowerW(watts: number | null): void {
-    for (const transaction of Array.from(this.transactions.values())) {
-      transaction.baseWh = this.getMeterValue(transaction.transactionId);
-      transaction.baseTime = Date.now();
-    }
+    this.rebaseAll();
     this.chargingPowerW = watts;
+  }
+
+  setFluctuate(on: boolean): void {
+    this.rebaseAll();
+    this.fluctuate = on;
+  }
+
+  private rebaseAll(): void {
+    for (const transaction of Array.from(this.transactions.values())) {
+      this.rebase(transaction);
+    }
   }
 
   getSocConfig(connectorId: number): SocConfig | null {
@@ -136,9 +186,53 @@ export class TransactionManager {
     );
   }
 
+  // Bring the register up to now. A constant power is one step; a varying
+  // one is stepped so the curve and the wobble are followed as they move.
   private rebase(transaction: TransactionState): void {
-    transaction.baseWh = this.getMeterValue(transaction.transactionId);
-    transaction.baseTime = Date.now();
+    const now = Date.now();
+    const room = this.roomWh(transaction.connectorId);
+    const varying =
+      this.fluctuate || !!this.socConfigs.get(transaction.connectorId)?.curve;
+    let wh = transaction.baseWh;
+    let time = transaction.baseTime;
+    while (time < now && (room === null || wh < room)) {
+      const step = varying
+        ? Math.min(INTEGRATION_STEP_MS, now - time)
+        : now - time;
+      wh += (this.powerAt(transaction, wh, time) * step) / 3_600_000;
+      time += step;
+    }
+    // A full battery takes nothing more; never below the last rebase, so a
+    // battery made smaller mid-session holds the register instead of rolling it back.
+    transaction.baseWh =
+      room === null ? wh : Math.max(transaction.baseWh, Math.min(wh, room));
+    transaction.baseTime = now;
+  }
+
+  // The power a transaction draws with this much energy delivered, at this
+  // moment: the set power, tapered by the charge curve, wobbled by the
+  // fluctuation. Ignores a full battery; the caller clamps to its room.
+  private powerAt(
+    transaction: TransactionState,
+    meterWh: number,
+    time: number,
+  ): number {
+    if (transaction.paused) {
+      return 0;
+    }
+    const setW = this.chargingPowerW ?? LEGACY_RATE_W;
+    let powerW = setW;
+    const config = this.socConfigs.get(transaction.connectorId);
+    if (config?.curve) {
+      powerW *= chargeCurve(
+        config.startPercent + (meterWh / config.batteryWh) * 100,
+        setW,
+      );
+    }
+    if (this.fluctuate) {
+      powerW *= fluctuation(transaction.seed, time);
+    }
+    return powerW;
   }
 
   // The energy a connector's battery still takes, or null without a battery.
@@ -169,8 +263,9 @@ export class TransactionManager {
       : null;
     return {
       meterWh,
-      powerW:
-        transaction.paused || full ? 0 : (this.chargingPowerW ?? LEGACY_RATE_W),
+      powerW: full
+        ? 0
+        : Math.round(this.powerAt(transaction, meterWh, Date.now())),
       socPercent,
       full,
       paused: transaction.paused,
@@ -312,6 +407,7 @@ export class TransactionManager {
       meterValuesCallback: startTransactionProps.meterValuesCallback,
       baseWh: 0,
       baseTime: Date.now(),
+      seed: Math.random() * 2 * Math.PI,
       paused: false,
     });
   }
@@ -340,19 +436,7 @@ export class TransactionManager {
     if (!transaction) {
       return 0;
     }
-    // Accumulated Wh since the last rebase + power * elapsed hours. With no
-    // charging power set this is the legacy fixed rate, the same reading the
-    // old (now - startedAt) / 100 gave, since a session starts at baseWh 0.
-    const powerW = transaction.paused
-      ? 0
-      : (this.chargingPowerW ?? LEGACY_RATE_W);
-    const elapsedHours = (Date.now() - transaction.baseTime) / 3_600_000;
-    const reading = transaction.baseWh + elapsedHours * powerW;
-    const room = this.roomWh(transaction.connectorId);
-    // A full battery takes nothing more; never below the last rebase, so a
-    // battery made smaller mid-session holds the register instead of rolling it back.
-    return room === null
-      ? reading
-      : Math.max(transaction.baseWh, Math.min(reading, room));
+    this.rebase(transaction);
+    return transaction.baseWh;
   }
 }

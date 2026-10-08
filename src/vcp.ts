@@ -277,7 +277,11 @@ export class VCP {
         errorCode: known?.errorCode ?? null,
         statusAt: known?.at ?? null,
         soc: soc
-          ? { batteryKwh: soc.batteryWh / 1000, startPercent: soc.startPercent }
+          ? {
+              batteryKwh: soc.batteryWh / 1000,
+              startPercent: soc.startPercent,
+              curve: soc.curve,
+            }
           : null,
         transaction:
           transaction && snapshot
@@ -297,7 +301,7 @@ export class VCP {
     this.transactionManager.setSocConfig(connectorId, config);
     logger.info(
       config
-        ? `Connector ${connectorId}: simulating a ${config.batteryWh / 1000} kWh battery from ${config.startPercent}%`
+        ? `Connector ${connectorId}: simulating a ${config.batteryWh / 1000} kWh battery from ${config.startPercent}%${config.curve ? ", tapering with SoC" : ""}`
         : `Connector ${connectorId}: battery simulation off`,
     );
     this.checkBatteries();
@@ -675,6 +679,7 @@ export class VCP {
     const w = this.transactionManager.chargingPowerW;
     return {
       kw: w == null ? null : w / 1000,
+      fluctuate: this.transactionManager.fluctuate,
       intervalMs: this.transactionManager.meterIntervalMs,
     };
   }
@@ -714,14 +719,18 @@ export class VCP {
             enabled: z.boolean(),
             batteryKwh: z.number().positive().max(1000).default(60),
             startPercent: z.number().min(0).max(100).default(20),
+            // Taper the power as the battery fills (see chargeCurve).
+            curve: z.boolean().default(false),
           }),
         ),
         (c) => {
-          const { connectorId, enabled, batteryKwh, startPercent } =
+          const { connectorId, enabled, batteryKwh, startPercent, curve } =
             c.req.valid("json");
           this.setSoc(
             connectorId,
-            enabled ? { batteryWh: batteryKwh * 1000, startPercent } : null,
+            enabled
+              ? { batteryWh: batteryKwh * 1000, startPercent, curve }
+              : null,
           );
           return c.json(this.getConnectorStates());
         },
@@ -944,7 +953,8 @@ export class VCP {
       );
       // Charging speed (kW) + MeterValues report cadence (intervalMs).
       // kw=null restores the legacy fixed rate; intervalMs=null (or absent)
-      // restores the default 15 s cadence.
+      // restores the default 15 s cadence. fluctuate=true draws a varying
+      // power always under kw; absent leaves it as it is.
       adminApi.get("/charging-power", (c) =>
         c.json(this.getChargingPowerState()),
       );
@@ -953,13 +963,22 @@ export class VCP {
         zValidator(
           "json",
           z.object({
-            kw: z.number().nullable(),
+            kw: z.number().nullable().optional(),
+            fluctuate: z.boolean().optional(),
             intervalMs: z.number().positive().nullable().optional(),
           }),
         ),
         (c) => {
-          const { kw, intervalMs } = c.req.valid("json");
-          this.setChargingPowerKw(kw);
+          const { kw, fluctuate, intervalMs } = c.req.valid("json");
+          if (kw !== undefined) {
+            this.setChargingPowerKw(kw);
+          }
+          if (fluctuate !== undefined) {
+            this.transactionManager.setFluctuate(fluctuate);
+            logger.info(
+              `Charging power ${fluctuate ? "fluctuates under the set power" : "steady"}`,
+            );
+          }
           // Only touch the cadence when the caller says so: a speed change
           // alone must not reset an interval set through /meter.
           if (intervalMs !== undefined) {
